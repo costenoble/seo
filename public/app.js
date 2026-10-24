@@ -660,16 +660,21 @@
     main.focus({ preventScroll: true });
   }
 
+  var booted = false;
+  // Supabase émet SIGNED_IN à chaque retour sur l'onglet et TOKEN_REFRESHED toutes les heures :
+  // on ne redessine la page que si l'utilisateur change (connexion, déconnexion), jamais pour le même compte.
   function onSession(event, session) {
-    var was = !!SESSION;
+    var prevId = SESSION && SESSION.user && SESSION.user.id, newId = session && session.user && session.user.id;
     SESSION = session;
+    if (booted && prevId === newId) return;
+    booted = true;
     renderTop();
-    if (!session) { ME = null; if (was) { location.hash = "#/"; } route(); return; }
-    var pendingGsc = sessionStorage.getItem("gsc-connect");
+    if (!session) { ME = null; if (prevId) location.hash = "#/"; route(); return; }
     var next = sessionStorage.getItem("after-login");
     sessionStorage.removeItem("after-login");
     var chain = refreshMe();
-    if (pendingGsc && event === "SIGNED_IN") {
+    if (sessionStorage.getItem("gsc-connect")) {
+      // retour de l'autorisation Search Console : le jeton de rafraîchissement n'est présent qu'à ce moment-là
       sessionStorage.removeItem("gsc-connect");
       chain = chain.then(function () {
         if (!session.provider_refresh_token) throw new Error("pas de jeton");
@@ -677,7 +682,7 @@
       }).catch(function () { next = "#/positions?google=erreur"; });
     }
     chain.catch(function () {}).then(function () {
-      if (next && next !== location.hash) location.hash = next; else if (!was || event === "SIGNED_IN") route();
+      if (next && next !== location.hash) location.hash = next; else route();
     });
   }
 
@@ -696,11 +701,8 @@
     CONFIG = c;
     if (!c.supabase_url || !window.supabase) { fill(main, emptyState("Configuration incomplète", "Variables manquantes côté serveur : " + (c.missing || []).join(", "), null)); return; }
     sb = window.supabase.createClient(c.supabase_url, c.supabase_anon_key, { auth: { flowType: "pkce", detectSessionInUrl: true, persistSession: true } });
-    var first = true;
     sb.auth.onAuthStateChange(function (event, session) {
-      // INITIAL_SESSION arrive une fois au chargement ; les autres événements suivent la connexion.
-      if (event === "TOKEN_REFRESHED") { SESSION = session; return; }
-      if (first || event !== "INITIAL_SESSION") { first = false; setTimeout(function () { onSession(event, session); }, 0); }
+      setTimeout(function () { onSession(event, session); }, 0);
     });
   }).catch(function (e) { fail(e); });
 })();
