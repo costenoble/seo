@@ -3,6 +3,10 @@ styles en ligne pour les messageries), résumé hebdomadaire, alertes, désinscr
 import base64
 import hashlib
 import hmac
+import smtplib
+import ssl
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid, parseaddr
 from html import escape
 
 import httpx
@@ -16,7 +20,42 @@ class EmailError(Exception):
     pass
 
 
-def send(api_key: str, sender: str, to: str, subject: str, html: str, text: str, unsubscribe_url: str = "") -> str:
+def enabled(settings) -> bool:
+    return bool(settings.smtp_host or settings.resend_api_key)
+
+
+def send(settings, to: str, subject: str, html: str, text: str, unsubscribe_url: str = "") -> str:
+    """Envoie par SMTP (ex. Hostinger) si configuré, sinon par l'API Resend."""
+    if settings.smtp_host:
+        return send_smtp(settings, to, subject, html, text, unsubscribe_url)
+    return send_resend(settings.resend_api_key, settings.email_from, to, subject, html, text, unsubscribe_url)
+
+
+def send_smtp(settings, to: str, subject: str, html: str, text: str, unsubscribe_url: str = "") -> str:
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = settings.email_from, to, subject
+    msg["Date"] = formatdate(localtime=False)
+    msg["Message-ID"] = make_msgid(domain=parseaddr(settings.email_from)[1].split("@")[-1] or None)
+    if unsubscribe_url:
+        msg["List-Unsubscribe"] = f"<{unsubscribe_url}>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+    try:
+        if settings.smtp_port == 465:
+            server = smtplib.SMTP_SSL(settings.smtp_host, 465, context=ssl.create_default_context(), timeout=20)
+        else:
+            server = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20)
+            server.starttls(context=ssl.create_default_context())
+        with server:
+            server.login(settings.smtp_user, settings.smtp_password)
+            server.send_message(msg)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise EmailError(f"Envoi SMTP impossible : {type(exc).__name__}: {exc}") from exc
+    return msg["Message-ID"]
+
+
+def send_resend(api_key: str, sender: str, to: str, subject: str, html: str, text: str, unsubscribe_url: str = "") -> str:
     headers = {}
     if unsubscribe_url:
         headers = {"List-Unsubscribe": f"<{unsubscribe_url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}

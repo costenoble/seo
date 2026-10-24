@@ -1310,7 +1310,7 @@
         toggle("ntf-digest", "Résumé hebdomadaire", "Chaque lundi matin : vos scores, vos positions et les actions prioritaires.", n.weekly_digest, save("weekly_digest")),
         toggle("ntf-alerts", "Alertes", "Score en baisse, problème grave, mot-clé qui chute ou entre dans le top 10. Une fois par heure au plus.", n.alerts, save("alerts")),
         h("div", { class: "form-row", style: "margin-top:16px;align-items:center" }, n.enabled ? testBtn : null,
-          h("span", { class: "note" }, n.enabled ? "Envoyés à " + n.email + "." + (n.test_mode ? " Mode test : seule l'adresse du compte Resend reçoit les e-mails tant que le domaine d'envoi n'est pas vérifié." : "")
+          h("span", { class: "note" }, n.enabled ? "Envoyés à " + n.email + " depuis " + n.sender + "." + (n.test_mode ? " Mode test : seule l'adresse du compte Resend reçoit les e-mails tant que le domaine d'envoi n'est pas vérifié." : "")
             : "Les e-mails ne sont pas encore configurés sur ce serveur.")), status);
     }).catch(function (e) { fill(box.lastChild, errorBox(e)); });
     return box;

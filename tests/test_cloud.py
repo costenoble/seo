@@ -447,7 +447,7 @@ def test_alerts_digest_and_unsubscribe(pg_dsn, monkeypatch, site):
     from datetime import date, datetime, timedelta, timezone
     from seo_audit.cloud import emails, notify
     sent = []
-    monkeypatch.setattr(emails, "send", lambda key, frm, to, subject, html, text, unsub="": sent.append((to, subject, html, text)) or "id")
+    monkeypatch.setattr(emails, "send", lambda cfg, to, subject, html, text, unsub="": sent.append((to, subject, html, text)) or "id")
     st = settings(pg_dsn, resend_api_key="re_test", email_from="Vigie SEO <vigie@exemple.fr>", app_url="https://app.test")
     client = cloud_app.create_app(st).test_client()
     db = cloud_app.Db(pg_dsn)
@@ -503,3 +503,27 @@ def test_week_start_is_monday_morning():
     assert week_start(wed) == datetime(2026, 10, 26, 6, tzinfo=timezone.utc)
     early_monday = datetime(2026, 10, 26, 5, tzinfo=timezone.utc)
     assert week_start(early_monday) == datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+
+
+def test_smtp_sending(monkeypatch):
+    from seo_audit.cloud import emails
+    boxes = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, context=None, timeout=None): boxes.append({"host": host, "port": port})
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def login(self, user, pwd): boxes[-1]["login"] = (user, pwd)
+        def send_message(self, msg): boxes[-1]["msg"] = msg
+    monkeypatch.setattr(emails.smtplib, "SMTP_SSL", FakeSMTP)
+    st = Settings(database_url="x", supabase_url="s", supabase_anon_key="a", smtp_host="smtp.hostinger.com",
+                  smtp_user="moi@cstlab.dev", smtp_password="secret", email_from="Vigie SEO <vigieseo@cstlab.dev>",
+                  resend_api_key="re_ignoree")
+    assert emails.enabled(st)
+    emails.send(st, "client@exemple.fr", "Sujet", "<p>Bonjour</p>", "Bonjour", "https://app/api/unsubscribe?u=1")
+    b = boxes[0]
+    assert b["host"] == "smtp.hostinger.com" and b["port"] == 465 and b["login"] == ("moi@cstlab.dev", "secret")
+    m = b["msg"]
+    assert m["From"] == "Vigie SEO <vigieseo@cstlab.dev>" and m["To"] == "client@exemple.fr"
+    assert m["List-Unsubscribe"] == "<https://app/api/unsubscribe?u=1>" and m["Message-ID"].endswith("@cstlab.dev>")
+    assert [p.get_content_type() for p in m.iter_parts()] == ["text/plain", "text/html"]

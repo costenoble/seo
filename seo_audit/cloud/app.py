@@ -167,8 +167,8 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.get("/api/notifications")
     @authed
     def notifications():
-        return jsonify(**db.notification_settings(user_id()), email=g.user["email"], enabled=bool(settings.resend_api_key),
-                       test_mode="resend.dev" in settings.email_from)
+        return jsonify(**db.notification_settings(user_id()), email=g.user["email"], enabled=emails.enabled(settings),
+                       test_mode=not settings.smtp_host and "resend.dev" in settings.email_from, sender=settings.email_from)
 
     @app.post("/api/notifications")
     @authed
@@ -183,7 +183,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     @authed
     def notifications_test():
         """Envoie tout de suite le résumé hebdomadaire à l'utilisateur (3 fois par heure au plus)."""
-        if not settings.resend_api_key:
+        if not emails.enabled(settings):
             abort(503, "E-mails non configurés")
         with db.conn() as c:
             recent = c.execute("""SELECT count(*) n FROM usage_events WHERE user_id=%s AND kind='email_test'
@@ -195,9 +195,9 @@ def create_app(settings: Settings | None = None) -> Flask:
         unsub = emails.unsubscribe_url(settings.app_url, settings.token_key, user_id(), "digest")
         subject, html, text = emails.digest(settings.app_url, name, data, unsub)
         try:
-            emails.send(settings.resend_api_key, settings.email_from, g.user["email"], "[Test] " + subject, html, text, unsub)
+            emails.send(settings, g.user["email"], "[Test] " + subject, html, text, unsub)
         except emails.EmailError as exc:
-            abort(502, f"Envoi refusé par Resend : {exc}")
+            abort(502, f"Envoi refusé : {exc}")
         db.add_usage(user_id(), "email_test")
         return jsonify(sent=True, to=g.user["email"])
 

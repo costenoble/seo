@@ -93,7 +93,7 @@ def run(db, settings, budget: float, now: datetime | None = None) -> dict:
         stats["alerts_created"] = generate_alerts(db)
     except Exception:  # la génération ne doit jamais bloquer l'envoi
         log.exception("Génération des alertes")
-    if not settings.resend_api_key:
+    if not emails.enabled(settings):
         return stats
     for u in db.users_with_pending_alerts(now - ALERT_INTERVAL):
         if time.monotonic() > deadline:
@@ -103,7 +103,7 @@ def run(db, settings, budget: float, now: datetime | None = None) -> dict:
             unsub = emails.unsubscribe_url(settings.app_url, settings.token_key, u["user_id"], "alerts")
             subject, html, text = emails.alerts(settings.app_url, _name(u), items, unsub)
             try:
-                emails.send(settings.resend_api_key, settings.email_from, u["email"], subject, html, text, unsub)
+                emails.send(settings, u["email"], subject, html, text, unsub)
                 stats["alert_emails"] += 1
             except emails.EmailError as exc:
                 log.warning("Alertes pour %s : %s", u["user_id"], exc)
@@ -118,7 +118,7 @@ def run(db, settings, budget: float, now: datetime | None = None) -> dict:
             unsub = emails.unsubscribe_url(settings.app_url, settings.token_key, u["user_id"], "digest")
             subject, html, text = emails.digest(settings.app_url, _name(u), data, unsub)
             try:
-                emails.send(settings.resend_api_key, settings.email_from, u["email"], subject, html, text, unsub)
+                emails.send(settings, u["email"], subject, html, text, unsub)
                 stats["digests"] += 1
             except emails.EmailError as exc:
                 log.warning("Résumé pour %s : %s", u["user_id"], exc)
