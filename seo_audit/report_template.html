@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audit SEO</title>
+<style>
+:root {
+  --paper: #F3F6F5; --surface: #FFFFFF; --ink: #17212B; --muted: #5B6875; --rule: #D3DBDF;
+  --accent: #1F5F8B;
+  --critical: #A4161A; --high: #CF5419; --medium: #B08400; --low: #4D7EA8; --info: #8C97A3;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #12181E; --surface: #1A222A; --ink: #E4EAEE; --muted: #9AA7B2; --rule: #2E3943;
+    --accent: #7FB6DE;
+    --critical: #F0646A; --high: #F08A4B; --medium: #E0B93A; --low: #7FA9D1; --info: #8794A0;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); }
+main { max-width: 1240px; margin: 0 auto; padding: 40px 24px 80px; }
+h1, h2 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.1; margin: 0 0 6px; overflow-wrap: anywhere; }
+h2 { font-size: 22px; margin: 0 0 12px; }
+.lede { color: var(--muted); margin: 0 0 28px; max-width: 70ch; }
+.lede strong { color: var(--ink); }
+.scores { list-style: none; padding: 0; margin: 0 0 28px; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.scores li { border: 1px solid var(--line, #ddd); border-radius: 8px; padding: 10px 12px; }
+.scores .v { font-size: 26px; font-weight: 600; display: block; }
+.scores .d { font-size: 13px; color: var(--muted); }
+.cmp { list-style: none; padding: 0; margin: 0 0 14px; font-size: 14px; }
+.cmp li { padding: 3px 0; }
+
+/* La bande de gravité : l'élément central du rapport */
+.strip { display: flex; height: 22px; border-radius: 3px; overflow: hidden; background: var(--rule); }
+.strip span { display: block; min-width: 3px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 12px 0 40px; font-size: 14px; color: var(--muted); }
+.legend b { color: var(--ink); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+
+.grid { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 32px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+
+.types { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+.types li { border-bottom: 1px solid var(--rule); }
+.types button { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: 10px 1fr auto;
+  gap: 10px; align-items: baseline; padding: 9px 6px; cursor: pointer; }
+.types button:hover, .types button[aria-pressed="true"] { background: var(--surface); }
+.types button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.types .n { font-variant-numeric: tabular-nums; color: var(--muted); }
+.types .dot { margin: 0; }
+
+.filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.filters input, .filters select { font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 4px; padding: 7px 10px; }
+.filters input { flex: 1 1 220px; }
+.filters input:focus-visible, .filters select:focus-visible, .more:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.count { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.url { max-width: 340px; overflow-wrap: anywhere; }
+td.url a { color: var(--accent); text-decoration: none; }
+td.url a:hover { text-decoration: underline; }
+.detail { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; display: block; margin-top: 2px; }
+.sev { white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; text-align: right; }
+.more { margin-top: 12px; font: inherit; background: none; color: var(--accent); border: 1px solid var(--rule);
+  border-radius: 4px; padding: 7px 14px; cursor: pointer; }
+.empty { padding: 28px; color: var(--muted); }
+details { margin-top: 56px; }
+summary { font-family: var(--serif); font-size: 22px; font-weight: 600; cursor: pointer; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="site"></h1>
+  <p class="lede" id="lede"></p>
+  <div class="strip" id="strip" role="img"></div>
+  <div class="legend" id="legend"></div>
+
+  <section id="scores-sec">
+    <h2>Score par catégorie</h2>
+    <ul class="scores" id="scores"></ul>
+  </section>
+  <section id="cmp-sec" hidden>
+    <h2>Depuis l'audit précédent</h2>
+    <p class="lede" id="cmp-lede"></p>
+    <details><summary>Nouveaux problèmes</summary><ul class="cmp" id="cmp-new"></ul></details>
+    <details><summary>Problèmes corrigés</summary><ul class="cmp" id="cmp-fixed"></ul></details>
+  </section>
+
+  <div class="grid">
+    <section>
+      <h2>Par type de problème</h2>
+      <ul class="types" id="types"></ul>
+    </section>
+    <section>
+      <h2>Problèmes à corriger</h2>
+      <div class="filters">
+        <input id="q" type="search" placeholder="Filtrer par URL ou texte" aria-label="Filtrer par URL ou texte">
+        <select id="sev" aria-label="Gravité"><option value="">Toutes les gravités</option></select>
+        <select id="cat" aria-label="Catégorie"><option value="">Toutes les catégories</option></select>
+      </div>
+      <p class="count" id="count"></p>
+      <div class="scroll"><table>
+        <thead><tr><th>Gravité</th><th>Page</th><th>Problème</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table></div>
+      <button class="more" id="more" hidden>Afficher 200 de plus</button>
+    </section>
+  </div>
+
+  <details>
+    <summary>Toutes les pages crawlées</summary>
+    <div class="scroll"><table>
+      <thead><tr><th>Page</th><th>Statut</th><th>Indexable</th><th class="num">Profondeur</th>
+        <th class="num">Liens entrants</th><th class="num">Mots</th><th class="num">Perf.</th><th class="num">Problèmes</th></tr></thead>
+      <tbody id="pages"></tbody>
+    </table></div>
+  </details>
+</main>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(function () {
+  var D = JSON.parse(document.getElementById("data").textContent);
+  var S = D.summary, SEV = ["critical", "high", "medium", "low", "info"];
+  var L = D.labels;
+  function el(tag, attrs, text) {
+    var n = document.createElement(tag);
+    for (var k in attrs || {}) n.setAttribute(k, attrs[k]);
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function dot(sev) { var d = el("span", { "class": "dot" }); d.style.background = "var(--" + sev + ")"; return d; }
+  function fmt(n) { return Number(n).toLocaleString("fr-FR"); }
+
+  document.title = "Audit SEO de " + S.site;
+  document.getElementById("site").textContent = S.site.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  var date = new Date(S.date).toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" });
+  var lede = document.getElementById("lede");
+  lede.append("Audit du " + date + ". ", el("strong", {}, fmt(S.pages_crawled) + " URLs"),
+    " crawlées, dont " + fmt(S.pages_indexable) + " indexables. Score de santé\u00a0: ",
+    el("strong", {}, S.health_score + " sur 100"), ".");
+
+  var scoresEl = document.getElementById("scores");
+  Object.keys(S.category_scores || {}).forEach(function (c) {
+    var li = el("li"), delta = S.comparison && S.comparison.category_deltas[c];
+    li.append(el("span", { "class": "v" }, S.category_scores[c]), L.category[c]);
+    if (delta) li.append(el("span", { "class": "d" }, " (" + (delta > 0 ? "+" : "") + delta + ")"));
+    scoresEl.append(li);
+  });
+  if (S.comparison) {
+    var C = S.comparison;
+    document.getElementById("cmp-sec").hidden = false;
+    document.getElementById("cmp-lede").textContent = "Par rapport au " +
+      new Date(C.previous_date).toLocaleString("fr-FR", { dateStyle: "long" }) + " : score " +
+      (C.score_delta > 0 ? "+" : "") + C.score_delta + ", " + fmt(C.new_count) + " nouveaux problèmes, " +
+      fmt(C.fixed_count) + " corrigés.";
+    [["cmp-new", C.new], ["cmp-fixed", C.fixed]].forEach(function (pair) {
+      pair[1].forEach(function (i) {
+        var li = el("li"); li.append(dot(i.severity), i.message + " — ", el("a", { href: i.url, target: "_blank", rel: "noopener" }, i.url));
+        document.getElementById(pair[0]).append(li);
+      });
+    });
+  }
+
+  var total = D.issues.length, strip = document.getElementById("strip"), legend = document.getElementById("legend");
+  strip.setAttribute("aria-label", "Répartition des " + total + " problèmes par gravité");
+  SEV.forEach(function (s) {
+    var n = S.issues_by_severity[s] || 0;
+    if (n && total) { var seg = el("span", { title: L.severity[s] + " : " + n }); seg.style.flex = n; seg.style.background = "var(--" + s + ")"; strip.append(seg); }
+    var item = el("span"); item.append(dot(s), el("b", {}, fmt(n)), L.severity[s]); legend.append(item);
+  });
+
+  // Synthèse par type
+  var byCode = {};
+  D.issues.forEach(function (i) {
+    var t = byCode[i.code] || (byCode[i.code] = { code: i.code, severity: i.severity, message: i.message, n: 0 });
+    t.n++;
+  });
+  var types = Object.values(byCode).sort(function (a, b) {
+    return SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || b.n - a.n;
+  });
+  var typesEl = document.getElementById("types"), activeCode = "";
+  types.forEach(function (t) {
+    var b = el("button", { type: "button", "aria-pressed": "false" });
+    var label = t.message.replace(/\s*\(.*\)$/, "");
+    b.append(dot(t.severity), el("span", {}, label), el("span", { "class": "n" }, fmt(t.n)));
+    b.addEventListener("click", function () {
+      activeCode = activeCode === t.code ? "" : t.code;
+      typesEl.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
+      if (activeCode) b.setAttribute("aria-pressed", "true");
+      limit = 200; render();
+    });
+    var li = el("li"); li.append(b); typesEl.append(li);
+  });
+  if (!types.length) typesEl.append(el("li", { "class": "empty" }, "Aucun problème détecté."));
+
+  // Filtres
+  var q = document.getElementById("q"), sevSel = document.getElementById("sev"), catSel = document.getElementById("cat");
+  SEV.forEach(function (s) { sevSel.append(el("option", { value: s }, L.severity[s])); });
+  Object.keys(L.category).forEach(function (c) { catSel.append(el("option", { value: c }, L.category[c])); });
+  var limit = 200, rows = document.getElementById("rows"), more = document.getElementById("more");
+  [q, sevSel, catSel].forEach(function (x) { x.addEventListener("input", function () { limit = 200; render(); }); });
+  more.addEventListener("click", function () { limit += 200; render(); });
+
+  function render() {
+    var term = q.value.trim().toLowerCase();
+    var list = D.issues.filter(function (i) {
+      return (!activeCode || i.code === activeCode) && (!sevSel.value || i.severity === sevSel.value)
+        && (!catSel.value || i.category === catSel.value)
+        && (!term || (i.url + " " + i.message + " " + i.detail).toLowerCase().indexOf(term) !== -1);
+    });
+    rows.replaceChildren();
+    list.slice(0, limit).forEach(function (i) {
+      var tr = el("tr"), s = el("td", { "class": "sev" });
+      s.append(dot(i.severity), L.severity[i.severity]);
+      var u = el("td", { "class": "url" }); u.append(el("a", { href: i.url, target: "_blank", rel: "noopener" }, i.url));
+      var m = el("td", {}, i.message);
+      if (i.detail) m.append(el("span", { "class": "detail" }, i.detail));
+      tr.append(s, u, m); rows.append(tr);
+    });
+    if (!list.length) { var td = el("td", { colspan: 3, "class": "empty" }, "Aucun problème ne correspond à ces filtres."); var tr0 = el("tr"); tr0.append(td); rows.append(tr0); }
+    document.getElementById("count").textContent = fmt(list.length) + " problème" + (list.length > 1 ? "s" : "") + (list.length > limit ? ", " + fmt(limit) + " affichés" : "");
+    more.hidden = list.length <= limit;
+  }
+  render();
+
+  var pages = document.getElementById("pages");
+  D.pages.slice().sort(function (a, b) { return b.issues - a.issues; }).forEach(function (p) {
+    var tr = el("tr"), u = el("td", { "class": "url" });
+    u.append(el("a", { href: p.url, target: "_blank", rel: "noopener" }, p.url));
+    if (p.title) u.append(el("span", { "class": "detail" }, p.title));
+    tr.append(u, el("td", {}, p.error ? "Erreur" : String(p.status == null ? "–" : p.status)),
+      el("td", {}, p.indexable ? "Oui" : "Non"),
+      el("td", { "class": "num" }, p.depth == null ? "–" : p.depth),
+      el("td", { "class": "num" }, fmt(p.inlinks)),
+      el("td", { "class": "num" }, p.word_count === "" ? "–" : fmt(p.word_count)),
+      el("td", { "class": "num" }, p.perf_score == null ? "–" : p.perf_score),
+      el("td", { "class": "num" }, fmt(p.issues)));
+    pages.append(tr);
+  });
+})();
+</script>
+</body>
+</html>

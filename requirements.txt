@@ -1,0 +1,10 @@
+httpx>=0.27
+selectolax>=0.3.21  # moteur lexbor
+defusedxml>=0.7
+flask>=3.0          # tableau de bord web (python -m seo_audit serve)
+# Optionnel : rendu JavaScript (--render-js)
+# playwright>=1.45        puis : playwright install chromium
+google-auth>=2.30   # Search Console : connexion Google (OAuth) ou compte de service
+requests>=2.31
+# Tests
+pytest>=8
