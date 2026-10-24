@@ -47,3 +47,23 @@ for theme, ink, seo in (("light", "#0b0b0b", "#2bb673"), ("dark", "#faf4f2", "#2
            f'{clip_mark(30, 32, 30, bg=bg, eye=eye)}<path d="{d1}" fill="{ink}"/><path d="{d2}" fill="{seo}"/></svg>')
     open(f"{out}/vigie-logo-{theme}.svg", "w").write(svg)
 print("ok")
+
+# Version intégrée à la page (en-tête du site) : couleurs pilotées par le CSS (thèmes clair et sombre)
+# et œil animable (classes eye-lid pour le clignement, eye-pupil pour le regard).
+def animated_mark(cx, cy, r, cid):
+    w, h = r * 1.28, r * 0.78
+    return (f'<defs><clipPath id="{cid}"><circle cx="{cx}" cy="{cy}" r="{r*0.86}"/></clipPath></defs>'
+            f'<circle class="eye-bg" cx="{cx}" cy="{cy}" r="{r}"/>'
+            f'<g clip-path="url(#{cid})"><g class="eye-lid">'
+            f'<path class="eye-white" d="M{cx-w} {cy} Q{cx} {cy-h*1.25} {cx+w} {cy} Q{cx} {cy+h*1.25} {cx-w} {cy}Z"/>'
+            f'<g class="eye-pupil"><circle cx="{cx}" cy="{cy}" r="{r*0.36}" fill="#2bb673"/>'
+            f'<circle cx="{cx}" cy="{cy}" r="{r*0.15}" fill="#0b0b0b"/>'
+            f'<circle cx="{cx+r*0.13}" cy="{cy-r*0.13}" r="{r*0.06}" fill="#fff"/></g></g></g>')
+
+d1, x1 = word("vigie", 44, 70, 46)
+d2, x2 = word("seo", 44, x1 + 8, 46)
+W = int(x2 + 4)
+open(f"{out}/vigie-logo-inline.svg", "w").write(
+    f'<svg class="logo eye-anim" viewBox="0 0 {W} 64" width="160" height="34" role="img" aria-label="Vigie SEO">'
+    f'{animated_mark(30, 32, 30, "eye-clip-head")}<path class="logo-word" d="{d1}"/><path d="{d2}" fill="#2bb673"/></svg>')
+print("inline ok")

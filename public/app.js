@@ -32,6 +32,37 @@
   function fill(node) {
     var kids = Array.prototype.slice.call(arguments, 1).flat(Infinity).filter(function (c) { return c != null && c !== false; });
     node.replaceChildren.apply(node, kids.map(function (c) { return c.nodeType ? c : document.createTextNode(String(c)); }));
+    if (node === main) {  // transition : les blocs de la page apparaissent l'un après l'autre
+      Array.prototype.forEach.call(main.children, function (c, i) { c.style.setProperty("--n", Math.min(i, 10)); });
+      main.querySelectorAll(".grid, .kpis, .features").forEach(function (g) {
+        Array.prototype.forEach.call(g.children, function (c, i) { c.style.setProperty("--n2", Math.min(i, 12)); });
+      });
+      main.classList.remove("enter"); void main.offsetWidth; main.classList.add("enter");
+    }
+    countUp(node);
+  }
+  var REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Les chiffres des indicateurs et des anneaux montent de 0 jusqu'à leur valeur.
+  function countUp(root) {
+    if (REDUCED || !root.querySelectorAll) return;
+    root.querySelectorAll(".kpi .v, .ring .v, .price").forEach(function (el) {
+      if (el.dataset.counted) return;
+      el.dataset.counted = "1";
+      var first = el.firstChild;
+      if (!first || first.nodeType !== 3) return;
+      var m = first.nodeValue.match(/^(\D*?)(-?\d[\d\s\u202f\u00a0]*(?:,\d+)?)(.*)$/);
+      if (!m) return;
+      var target = parseFloat(m[2].replace(/[\s\u202f\u00a0]/g, "").replace(",", "."));
+      if (!isFinite(target) || target === 0) return;
+      var dec = (m[2].split(",")[1] || "").length, start = null, dur = 900 + Math.min(600, String(Math.round(target)).length * 60);
+      function frame(t) {
+        if (start === null) start = t;
+        var k = Math.min(1, (t - start) / dur), e = 1 - Math.pow(1 - k, 3);
+        first.nodeValue = m[1] + (target * e).toLocaleString("fr-FR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) + m[3];
+        if (k < 1) requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    });
   }
   var nf = new Intl.NumberFormat("fr-FR");
   function fmt(n, d) { return n == null || n === "" ? "–" : (d ? Number(n).toLocaleString("fr-FR", { maximumFractionDigits: d }) : nf.format(Math.round(n))); }
@@ -84,9 +115,10 @@
     var r = 42, c = 2 * Math.PI * r, wrap = h("div", { class: "ring", role: "img", "aria-label": "Score " + score + " sur 100" });
     wrap.style.setProperty("--s", (size || 96) + "px");
     wrap.append(svg("svg", { viewBox: "0 0 100 100" },
-      svg("circle", { cx: 50, cy: 50, r: r, fill: "none", stroke: "rgba(0,0,0,.09)", "stroke-width": 10 }),
-      svg("circle", { cx: 50, cy: 50, r: r, fill: "none", stroke: scoreColor(score), "stroke-width": 10, "stroke-linecap": "round",
-        "stroke-dasharray": (c * score / 100) + " " + c })), h("span", { class: "v" }, score));
+      svg("circle", { cx: 50, cy: 50, r: r, fill: "none", style: "stroke: var(--line)", "stroke-width": 10 }),
+      svg("circle", { cx: 50, cy: 50, r: r, fill: "none", style: "stroke:" + scoreColor(score), "stroke-width": 10, "stroke-linecap": "round",
+        "stroke-dasharray": (REDUCED ? c * score / 100 : 0) + " " + c })), h("span", { class: "v" }, score));
+    if (!REDUCED) setTimeout(function () { wrap.querySelector("circle:last-child").setAttribute("stroke-dasharray", (c * score / 100) + " " + c); }, 60);
     return wrap;
   }
   function delta(d) {
@@ -109,17 +141,17 @@
     var xs = points.map(function (p) { return +p.x; }), x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
     var X = function (v) { return P.l + (x1 === x0 ? (W - P.l - P.r) / 2 : (v - x0) / (x1 - x0) * (W - P.l - P.r)); };
     var Y = function (v) { var t = (v - lo) / (hi - lo); return P.t + (o.invert ? t : 1 - t) * (H - P.t - P.b); };
-    var color = o.color || "#0b0b0b", s = svg("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": o.label || "Graphique" });
+    var color = o.color || "var(--ink)", s = svg("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": o.label || "Graphique" });
     for (var i = 0; i <= 4; i++) {
       var v = lo + (hi - lo) * i / 4, y = Y(v);
       s.append(svg("line", { class: "grid-line", x1: P.l, x2: W - P.r, y1: y, y2: y }), svg("text", { x: P.l - 8, y: y + 4, "text-anchor": "end" }, fmt(v, hi - lo < 10 ? 1 : 0)));
     }
     var d = points.map(function (p, i) { return (i ? "L" : "M") + X(+p.x).toFixed(1) + " " + Y(p.y).toFixed(1); }).join(" ");
-    if (points.length > 1) s.append(svg("path", { class: "area", d: d + " L" + X(x1) + " " + (H - P.b) + " L" + X(x0) + " " + (H - P.b) + " Z", fill: color }));
-    s.append(svg("path", { d: d, fill: "none", stroke: color, "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    if (points.length > 1) s.append(svg("path", { class: "area", d: d + " L" + X(x1) + " " + (H - P.b) + " L" + X(x0) + " " + (H - P.b) + " Z", style: "fill:" + color }));
+    s.append(svg("path", { d: d, fill: "none", style: "stroke:" + color, "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" }));
     points.forEach(function (p, i) {
       if (points.length > 40 && i !== points.length - 1) return;
-      s.append(svg("circle", { cx: X(+p.x), cy: Y(p.y), r: 5, fill: "#fff", stroke: color, "stroke-width": 3 }, svg("title", {}, fdate(p.x, true) + " : " + fmt(p.y, 1))));
+      s.append(svg("circle", { cx: X(+p.x), cy: Y(p.y), r: 5, style: "fill: var(--paper); stroke:" + color, "stroke-width": 3 }, svg("title", {}, fdate(p.x, true) + " : " + fmt(p.y, 1))));
     });
     (points.length > 1 ? [points[0], points[points.length - 1]] : [points[0]]).forEach(function (p, i) {
       s.append(svg("text", { x: X(+p.x), y: H - 6, "text-anchor": points.length === 1 ? "middle" : i ? "end" : "start" }, fdate(p.x)));
@@ -132,11 +164,11 @@
     var lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
     if (lo === hi) { lo -= 1; hi += 1; }
     var d = values.map(function (v, i) { return (i ? "L" : "M") + (i / (values.length - 1) * (W - 4) + 2).toFixed(1) + " " + (H - 4 - (v - lo) / (hi - lo) * (H - 8)).toFixed(1); }).join(" ");
-    return svg("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, "aria-hidden": "true" }, svg("path", { d: d, fill: "none", stroke: "#0b0b0b", "stroke-width": 2.5, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    return svg("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H, "aria-hidden": "true" }, svg("path", { d: d, fill: "none", style: "stroke: var(--ink)", "stroke-width": 2.5, "stroke-linecap": "round", "stroke-linejoin": "round" }));
   }
   function kpi(value, label, tint) { return h("div", { class: "kpi " + (tint || "") }, h("span", { class: "v" }, value), h("span", { class: "l" }, label)); }
   function emptyState(title, text, cta) {
-    return h("div", { class: "card empty" }, h("img", { src: "/img/vigie-mark.svg", alt: "", width: 96, height: 96 }), h("h2", {}, title), h("p", { class: "muted" }, text), cta);
+    return h("div", { class: "card empty" }, eyeMark(96), h("h2", {}, title), h("p", { class: "muted" }, text), cta);
   }
   function progressBar(done, total) {
     var pct = total ? Math.min(100, Math.round(done / total * 100)) : 5, bar = h("div", { class: "progress", role: "progressbar", "aria-valuenow": pct, "aria-valuemin": 0, "aria-valuemax": 100 });
@@ -150,6 +182,62 @@
   };
   function icon(name) {
     return h("span", { class: "icon", "aria-hidden": "true" }, svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "#2bb673", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" }, svg("path", { d: ICONS[name] })));
+  }
+
+  /* ---------- l'œil de la vigie : il suit la souris, regarde autour de lui et cligne ---------- */
+  var eyes = [], pointer = null, eyeFrame = 0, eyeCount = 0;
+  function eyeMark(size, extraClass) {
+    var id = "eye-clip-" + (++eyeCount), w = 32 * 1.28, hh = 32 * 0.78;
+    var el = svg("svg", { class: "eye-anim " + (extraClass || ""), viewBox: "0 0 64 64", width: size, height: size, "aria-hidden": "true" },
+      svg("defs", {}, svg("clipPath", { id: id }, svg("circle", { cx: 32, cy: 32, r: 27.5 }))),
+      svg("circle", { class: "eye-bg", cx: 32, cy: 32, r: 32 }),
+      svg("g", { "clip-path": "url(#" + id + ")" }, svg("g", { class: "eye-lid" },
+        svg("path", { class: "eye-white", d: "M" + (32 - w) + " 32 Q32 " + (32 - hh * 1.25) + " " + (32 + w) + " 32 Q32 " + (32 + hh * 1.25) + " " + (32 - w) + " 32Z" }),
+        svg("g", { class: "eye-pupil" }, svg("circle", { cx: 32, cy: 32, r: 11.5, fill: "#2bb673" }), svg("circle", { cx: 32, cy: 32, r: 4.8, fill: "#0b0b0b" }),
+          svg("circle", { cx: 36.2, cy: 27.8, r: 1.9, fill: "#fff" })))));
+    watchEye(el);
+    return el;
+  }
+  function watchEye(el) {
+    if (REDUCED || el._eye) return;
+    el._eye = { pupil: el.querySelector(".eye-pupil"), bg: el.querySelector(".eye-bg"), idle: [0, 0] };
+    eyes.push(el);
+    (function blinkLater() {   // clignement à intervalles irréguliers, parfois double
+      setTimeout(function () {
+        if (!el.isConnected) return;
+        blink(el); if (Math.random() < .25) setTimeout(function () { blink(el); }, 260);
+        blinkLater();
+      }, 2500 + Math.random() * 4500);
+    })();
+  }
+  function blink(el) { el.classList.remove("blink"); void el.getBoundingClientRect(); el.classList.add("blink"); setTimeout(function () { el.classList.remove("blink"); }, 230); }
+  function look() {
+    eyeFrame = 0;
+    eyes = eyes.filter(function (el) { return el.isConnected; });
+    eyes.forEach(function (el) {
+      var e = el._eye, box = e.bg.getBoundingClientRect(), r = +e.bg.getAttribute("r"), max = r * .3, dx, dy;
+      if (!box.width) return;
+      if (pointer) {
+        dx = pointer.x - (box.left + box.width / 2); dy = pointer.y - (box.top + box.height / 2);
+        var d = Math.hypot(dx, dy) || 1, k = Math.min(1, d / (box.width * 2.5));
+        dx = dx / d * max * k; dy = dy / d * max * k * .65;
+      } else { dx = e.idle[0] * max; dy = e.idle[1] * max * .6; }
+      e.pupil.style.transform = "translate(" + dx.toFixed(2) + "px," + dy.toFixed(2) + "px)";
+    });
+  }
+  function scheduleLook() { if (!eyeFrame) eyeFrame = requestAnimationFrame(look); }
+  if (!REDUCED) {
+    document.addEventListener("mousemove", function (e) { pointer = { x: e.clientX, y: e.clientY }; scheduleLook(); }, { passive: true });
+    document.addEventListener("mouseleave", function () { pointer = null; scheduleLook(); });
+    window.addEventListener("scroll", scheduleLook, { passive: true });
+    // sans souris (mobile, ou souris immobile hors de la page) : l'œil regarde de lui-même autour de lui
+    setInterval(function () {
+      if (pointer) return;
+      var dirs = [[0, 0], [-1, 0], [1, 0], [-.7, -.6], [.7, -.6], [0, .8], [0, 0]];
+      eyes.forEach(function (el) { el._eye.idle = dirs[Math.floor(Math.random() * dirs.length)]; });
+      look();
+    }, 2600);
+    document.querySelectorAll(".eye-anim").forEach(watchEye);
   }
 
   /* ---------- menus déroulants maison ----------
@@ -270,7 +358,7 @@
       api("/api/audits/" + auditId + "/step", {}).then(function (a) {
         fill(barBox, progressBar(a.progress.done, a.progress.total));
         status.textContent = (PHASE[a.phase] || "En cours…") + (a.progress.total ? " " + fmt(a.progress.done) + " / " + fmt(a.progress.total) + " pages" : "");
-        if (a.status === "done") { closeOverlay(); onDone(a); return; }
+        if (a.status === "done") { closeOverlay(); toast("Audit terminé ✓" + (a.score != null ? " Score : " + a.score + "/100" : ""), "good"); onDone(a); return; }
         if (a.status === "failed") { fill(err, errorBox(new Error(a.error || "L'audit a échoué"))); return; }
         setTimeout(loop, 600);
       }).catch(function (e) { fill(err, errorBox(e)); setTimeout(loop, 4000); });
@@ -331,7 +419,7 @@
           h("div", { class: "actions" }, h("button", { class: "btn btn-dark", type: "button", onclick: signIn }, "Commencer gratuitement"),
             h("a", { class: "btn", href: "#/offres" }, "Voir les offres")),
           h("p", { class: "note" }, "Connexion avec votre compte Google. Sans carte bancaire.")),
-        h("div", { class: "hero-art", "aria-hidden": "true" }, h("img", { src: "/img/vigie-mark.svg", alt: "" }),
+        h("div", { class: "hero-art", "aria-hidden": "true" }, eyeMark(280, "hero-eye"),
           h("span", { class: "bubble", style: "top:12%;left:8%" }, "Score 92 ▲"), h("span", { class: "bubble", style: "bottom:14%;right:6%" }, "3 erreurs corrigées"))),
       h("section", {}, h("h2", { style: "margin-bottom:22px" }, "Tout ce qu'il faut pour progresser"),
         h("div", { class: "features" }, feats.map(function (f) { return h("div", { class: "card " + f[3] }, icon(f[0]), h("h3", {}, f[1]), h("p", {}, f[2])); }))),
@@ -407,7 +495,7 @@
                 h("td", {}, c ? [delta(c.score_delta), " ", h("span", { class: "muted" }, "+" + c.new_count + " / −" + c.fixed_count)] : ok ? h("span", { class: "muted" }, "Premier audit") : null),
                 h("td", {}, h("button", { class: "btn btn-small", type: "button", "aria-label": "Supprimer l'audit du " + fdatetime(a.date), onclick: function () {
                   if (!confirm("Supprimer cet audit ?")) return;
-                  api("/api/audits/" + a.id, undefined, "DELETE").then(function () { viewSite(key); }).catch(function (e) { alert(e.message); });
+                  api("/api/audits/" + a.id, undefined, "DELETE").then(function () { toast("Audit supprimé", "good"); viewSite(key); }).catch(function (e) { toast(e.message, "bad"); });
                 } }, "Supprimer")));
             }))))));
     }).catch(fail);
@@ -467,7 +555,7 @@
       h("div", { class: "page-head", style: "margin-top:16px" }, ring(S.health_score, 112),
         h("div", { class: "grow" }, h("p", { class: "eyebrow" }, "Audit du " + fdatetime(S.date)), h("h1", { style: "font-size:clamp(1.8rem,3.6vw,2.6rem)" }, "Problèmes à corriger"), sevs(S.issues_by_severity)),
         h("div", { class: "form-row" },
-          h("button", { class: "btn btn-small", type: "button", onclick: function () { download("/api/audits/" + id + "/report.html", "rapport-" + slug + ".html").catch(function (e) { alert(e.message); }); } }, "Rapport HTML"),
+          h("button", { class: "btn btn-small", type: "button", onclick: function () { download("/api/audits/" + id + "/report.html", "rapport-" + slug + ".html").then(function () { toast("Rapport téléchargé ✓", "good"); }).catch(function (e) { toast(e.message, "bad"); }); } }, "Rapport HTML"),
           h("button", { class: "btn btn-small", type: "button", onclick: exportIssues }, "CSV problèmes"),
           h("button", { class: "btn btn-small", type: "button", onclick: exportPages }, "CSV pages"))),
       h("div", { class: "kpis" }, kpi(fmt(S.pages_crawled), "pages explorées"), kpi(fmt(S.pages_indexable), "pages indexables", "blue"), kpi(fmt(S.sitemap_urls), "URLs dans le sitemap"),
@@ -529,6 +617,7 @@
             total += r.imported;
             if (!r.done) return chunk(r.offset);
             syncStatus.textContent = fmt(total) + " lignes importées." + (r.pages === false ? " Analyse des pages…" : "");
+            toast("Search Console importée ✓ " + fmt(total) + " lignes", "good");
             return (r.pages === false ? api("/api/positions/sync-pages", { site: sel.value }) : Promise.resolve()).then(function () { viewPositions(); });
           }).catch(function (x) { syncBtn.disabled = false; syncStatus.textContent = ""; fill(err, errorBox(x)); });
         })(0);
@@ -848,7 +937,10 @@
     var srcPills = h("div", { class: "pills", role: "group", "aria-label": "Origine" });
     var todo = d.tasks.filter(function (t) { return t.status === "todo"; }).length, done = d.tasks.filter(function (t) { return t.status === "done"; }).length;
     function setStatus(t, status) {
-      api("/api/plan/tasks/" + t.id, { status: status }).then(function () { viewPlan(key); }).catch(function (e) { alert(e.message); });
+      api("/api/plan/tasks/" + t.id, { status: status }).then(function () {
+        toast(status === "done" ? "Bravo, tâche faite ✓ L'effet sera mesuré." : status === "ignored" ? "Tâche ignorée" : "Tâche rouverte", status === "done" ? "good" : "");
+        viewPlan(key);
+      }).catch(function (e) { toast(e.message, "bad"); });
     }
     function impactView(t) {
       var i = t.impact;
@@ -914,7 +1006,7 @@
   }
 
   /* ---------- vue : suivi de positions ---------- */
-  var SERIES_COLORS = ["#0b0b0b", "#ff6235", "#2bb673", "#6fb1dc", "#b06ad9", "#f2a93b", "#cf3434", "#7a6f6a"];
+  var SERIES_COLORS = ["var(--ink)", "#ff6235", "#2bb673", "#6fb1dc", "#b06ad9", "#f2a93b", "#cf3434", "#7a6f6a"];
   // Plusieurs courbes de positions (1 en haut) ; les absences du top coupent la ligne.
   function multiChart(series, o) {
     o = o || {};
@@ -935,8 +1027,8 @@
         if (p.y == null) { pen = false; return; }
         d += (pen ? "L" : "M") + X(+p.x).toFixed(1) + " " + Y(p.y).toFixed(1) + " "; pen = true;
       });
-      if (d) s.append(svg("path", { d: d, fill: "none", stroke: color, "stroke-width": i ? 2.5 : 3.5, "stroke-linejoin": "round", "stroke-linecap": "round" }));
-      sr.points.forEach(function (p) { if (p.y != null) s.append(svg("circle", { cx: X(+p.x), cy: Y(p.y), r: i ? 3 : 4, fill: color }, svg("title", {}, sr.name + " : " + p.y + "e le " + fdate(p.x, true)))); });
+      if (d) s.append(svg("path", { d: d, fill: "none", style: "stroke:" + color, "stroke-width": i ? 2.5 : 3.5, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      sr.points.forEach(function (p) { if (p.y != null) s.append(svg("circle", { cx: X(+p.x), cy: Y(p.y), r: i ? 3 : 4, style: "fill:" + color }, svg("title", {}, sr.name + " : " + p.y + "e le " + fdate(p.x, true)))); });
     });
     s.append(svg("text", { x: X(x0), y: H - 6 }, fdate(x0)));
     if (x1 !== x0) s.append(svg("text", { x: X(x1), y: H - 6, "text-anchor": "end" }, fdate(x1)));
@@ -985,7 +1077,8 @@
     var addForm = h("form", { class: "card", style: "display:grid;gap:14px", onsubmit: function (e) {
       e.preventDefault(); addBtn.disabled = true; fill(err);
       api("/api/tracking/" + encodeURIComponent(site) + "/keywords", { keywords: kwIn.value, location: +loc.value, device: dev.value })
-        .then(function () { viewTracking(site); }).catch(function (x) { addBtn.disabled = false; fill(err, errorBox(x)); });
+        .then(function (r) { toast(r.added + " mot" + (r.added > 1 ? "s" : "") + "-clé" + (r.added > 1 ? "s" : "") + " suivi" + (r.added > 1 ? "s" : "") + " ✓ Premier relevé sous une heure.", "good"); viewTracking(site); })
+        .catch(function (x) { addBtn.disabled = false; fill(err, errorBox(x)); });
     } }, h("h3", {}, "Ajouter des mots-clés"), h("div", { class: "field" }, h("label", { for: "tr-kw" }, "Mots-clés"), kwIn),
       h("div", { class: "form-row" }, h("div", { class: "field", style: "flex:0 0 170px" }, h("label", { for: "tr-loc" }, "Pays"), loc),
         h("div", { class: "field", style: "flex:0 0 170px" }, h("label", { for: "tr-dev" }, "Appareil"), dev), addBtn),
@@ -993,7 +1086,7 @@
 
     var compIn = h("input", { type: "text", placeholder: "concurrent.fr", "aria-label": "Ajouter un concurrent" }), compErr = h("div");
     function addComp(domain) {
-      api("/api/tracking/" + encodeURIComponent(site) + "/competitors", { domain: domain }).then(function () { viewTracking(site); }).catch(function (x) { fill(compErr, errorBox(x)); });
+      api("/api/tracking/" + encodeURIComponent(site) + "/competitors", { domain: domain }).then(function () { toast("Concurrent ajouté ✓", "good"); viewTracking(site); }).catch(function (x) { fill(compErr, errorBox(x)); });
     }
     var compTable = h("div", { class: "table-wrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "Domaine"), h("th", { class: "num" }, "Visibilité"), h("th", { class: "num" }, "7 jours"), h("th", { class: "num" }, "Pos. moyenne"), h("th", { class: "num" }, "Top 10"), h("th", {}, ""))),
@@ -1281,7 +1374,7 @@
   var ROUTE_SECTION = { site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
   var currentSection = "home";
   var menu = document.getElementById("menu"), burger = document.getElementById("burger"), topBar = document.querySelector(".top");
-  var lastFocus = null, menuTimer = null, brandImg = document.querySelector(".brand img");
+  var lastFocus = null, menuTimer = null;
   var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function buildMenu() {
@@ -1297,7 +1390,20 @@
       h("div", { class: "menu-foot", style: "--i:" + (n++) },
         h("button", { class: "btn btn-green", type: "button", onclick: function () { closeMenu(); newAuditModal(); } }, "Nouvel audit"),
         h("a", { class: "btn btn-ghost", href: "#/compte" }, "Mon compte" + (ME ? " · offre " + ME.limits.label : "")),
-        h("button", { class: "btn btn-ghost", type: "button", onclick: function () { closeMenu(); sb.auth.signOut(); } }, "Se déconnecter"))));
+        h("button", { class: "btn btn-ghost", type: "button", onclick: function () { closeMenu(); sb.auth.signOut(); } }, "Se déconnecter"),
+        h("button", { class: "btn btn-ghost theme-switch", type: "button", "aria-pressed": String(isDark()), onclick: toggleTheme }, isDark() ? "☀ Mode clair" : "☾ Mode sombre"))));
+  }
+  function isDark() {
+    var t = document.documentElement.dataset.theme;
+    return t ? t === "dark" : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+
+  function toggleTheme() {
+    var next = isDark() ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("vigie-theme", next); } catch (e) {}
+    buildMenu();
+    toast(next === "dark" ? "Mode sombre activé" : "Mode clair activé", "good");
   }
   function openMenu() {
     clearTimeout(menuTimer);
@@ -1305,7 +1411,6 @@
     lastFocus = document.activeElement;
     menu.hidden = false; menu.classList.remove("closing");
     topBar.classList.add("menu-open"); document.documentElement.classList.add("no-scroll");
-    brandImg.src = "/img/vigie-logo-dark.svg";
     burger.setAttribute("aria-expanded", "true"); burger.setAttribute("aria-label", "Fermer le menu");
     requestAnimationFrame(function () { menu.classList.add("open"); });
     setTimeout(function () { var f = menu.querySelector(".menu-item"); if (f) f.focus(); }, reduceMotion ? 0 : 350);
@@ -1314,7 +1419,7 @@
     if (menu.hidden) return;
     menu.classList.remove("open"); menu.classList.add("closing");
     topBar.classList.remove("menu-open"); document.documentElement.classList.remove("no-scroll");
-    setTimeout(function () { brandImg.src = "/img/vigie-logo-light.svg"; }, reduceMotion ? 0 : 250);
+
     burger.setAttribute("aria-expanded", "false"); burger.setAttribute("aria-label", "Ouvrir le menu");
     menuTimer = setTimeout(function () { menu.hidden = true; menu.classList.remove("closing"); }, reduceMotion ? 0 : 420);
     if (lastFocus && lastFocus.focus) lastFocus.focus();
