@@ -1,0 +1,373 @@
+{
+ "se_type": "google",
+ "seed_keyword": "logiciel facturation",
+ "seed_keyword_data": null,
+ "location_code": 2250,
+ "language_code": "fr",
+ "total_count": 1613,
+ "items_count": 3,
+ "offset": 0,
+ "offset_token": "eyJDdXJyZW50T2Zmc2V0IjozLCJSZXF1ZXN0RGF0YSI6eyJrZXl3b3JkIjoibG9naWNpZWwgZmFjdHVyYXRpb24iLCJpbmNsdWRlX3NlZWRfa2V5d29yZCI6ZmFsc2UsImZ1bGxfbWF0Y2giOmZhbHNlLCJsb2FkX3NlcnBfaW5mbyI6ZmFsc2UsInNlYXJjaF9hZnRlcl90b2tlbiI6bnVsbCwiaWdub3JlX3N5bm9ueW1zIjpmYWxzZSwibGFuZ3VhZ2UiOiJmciIsInNlYXJjaF9lbmdpbmUiOiJnb29nbGUiLCJsb2NhdGlvbiI6MjI1MCwidXNlX25ld19jYXRlZ29yaWVzIjp0cnVlLCJvcmRlcl9ieSI6eyJvcmRlcl9maWVsZCI6ImtleXdvcmRfaW5mby5zZWFyY2hfdm9sdW1lIiwib3JkZXJfdHlwZSI6IkRlc2MiLCJuZXh0IjpudWxsfSwibGltaXQiOjMsIm9mZnNldCI6MCwiYWlkIjoyOTE2MDQsInVzZV9jYWNoZSI6dHJ1ZSwidGFza19pZCI6IjEwMjQxMDQwLTI5MTYtMDM5OS0wMDAwLWQxOTkyNDVkNmE2NCIsImZsYWdzIjpudWxsfSwiUmF3UXVlcnkiOm51bGwsIklkIjoiODgyZTNjMDMtYmU0Zi00MzQ3LTk3OTAtOTk5YWIyOWZmMGE2IiwiU2VhcmNoQWZ0ZXJEYXRhIjpbMzYwMCwiYTc4MGU0ZDgtZDQyZi1hYWY1LWMxMmQtOTBlYzJhODhkM2M4Il0sIkV4ZWN1dG9yIjotOTE4NDQwNTk0MDQ0NDUxNzYzM30=",
+ "items": [
+  {
+   "se_type": "google",
+   "keyword": "logiciel pour facturation gratuit",
+   "location_code": 2250,
+   "language_code": "fr",
+   "keyword_info": {
+    "se_type": "google",
+    "last_updated_time": "2026-10-20 11:08:24 +00:00",
+    "competition": 0.76,
+    "competition_level": "HIGH",
+    "cpc": 9.55,
+    "search_volume": 3600,
+    "low_top_of_page_bid": 2.4,
+    "high_top_of_page_bid": 9.5,
+    "categories": [
+     10019,
+     10168,
+     10537,
+     10885,
+     12209
+    ],
+    "monthly_searches": [
+     {
+      "year": 2026,
+      "month": 9,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 8,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 7,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 6,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 5,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 4,
+      "search_volume": 4400
+     },
+     {
+      "year": 2026,
+      "month": 3,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 2,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 1,
+      "search_volume": 4400
+     },
+     {
+      "year": 2025,
+      "month": 12,
+      "search_volume": 3600
+     },
+     {
+      "year": 2025,
+      "month": 11,
+      "search_volume": 3600
+     },
+     {
+      "year": 2025,
+      "month": 10,
+      "search_volume": 4400
+     }
+    ],
+    "search_volume_trend": {
+     "monthly": -19,
+     "quarterly": 0,
+     "yearly": -34
+    }
+   },
+   "keyword_info_normalized_with_bing": null,
+   "keyword_info_normalized_with_clickstream": null,
+   "clickstream_keyword_info": null,
+   "keyword_properties": {
+    "se_type": "google",
+    "core_keyword": "logiciel facturation gratuit",
+    "synonym_clustering_algorithm": "text_processing",
+    "keyword_difficulty": 60,
+    "detected_language": "fr",
+    "is_another_language": false,
+    "words_count": 4
+   },
+   "serp_info": null,
+   "avg_backlinks_info": {
+    "se_type": "google",
+    "backlinks": 971.1,
+    "dofollow": 555.7,
+    "referring_pages": 731.2,
+    "referring_domains": 64.1,
+    "referring_main_domains": 61.2,
+    "rank": 159.4,
+    "main_domain_rank": 322.1,
+    "last_updated_time": "2024-09-14 14:28:32 +00:00"
+   },
+   "search_intent_info": {
+    "se_type": "google",
+    "main_intent": "commercial",
+    "foreign_intent": null,
+    "last_updated_time": "2026-04-29 16:48:05 +00:00"
+   }
+  },
+  {
+   "se_type": "google",
+   "keyword": "logiciel facturation gratuit",
+   "location_code": 2250,
+   "language_code": "fr",
+   "keyword_info": {
+    "se_type": "google",
+    "last_updated_time": "2026-10-17 12:52:01 +00:00",
+    "competition": 0.76,
+    "competition_level": "HIGH",
+    "cpc": 9.55,
+    "search_volume": 3600,
+    "low_top_of_page_bid": 2.4,
+    "high_top_of_page_bid": 9.5,
+    "categories": [
+     10019,
+     10168,
+     10537,
+     10885,
+     12209
+    ],
+    "monthly_searches": [
+     {
+      "year": 2026,
+      "month": 9,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 8,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 7,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 6,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 5,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 4,
+      "search_volume": 4400
+     },
+     {
+      "year": 2026,
+      "month": 3,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 2,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 1,
+      "search_volume": 4400
+     },
+     {
+      "year": 2025,
+      "month": 12,
+      "search_volume": 3600
+     },
+     {
+      "year": 2025,
+      "month": 11,
+      "search_volume": 3600
+     },
+     {
+      "year": 2025,
+      "month": 10,
+      "search_volume": 4400
+     }
+    ],
+    "search_volume_trend": {
+     "monthly": -19,
+     "quarterly": 0,
+     "yearly": -34
+    }
+   },
+   "keyword_info_normalized_with_bing": null,
+   "keyword_info_normalized_with_clickstream": null,
+   "clickstream_keyword_info": null,
+   "keyword_properties": {
+    "se_type": "google",
+    "core_keyword": null,
+    "synonym_clustering_algorithm": "text_processing",
+    "keyword_difficulty": 60,
+    "detected_language": "fr",
+    "is_another_language": false,
+    "words_count": 3
+   },
+   "serp_info": null,
+   "avg_backlinks_info": {
+    "se_type": "google",
+    "backlinks": 1587.9,
+    "dofollow": 684.7,
+    "referring_pages": 977.2,
+    "referring_domains": 172.9,
+    "referring_main_domains": 155.7,
+    "rank": 244,
+    "main_domain_rank": 316.9,
+    "last_updated_time": "2026-10-02 21:31:24 +00:00"
+   },
+   "search_intent_info": {
+    "se_type": "google",
+    "main_intent": "commercial",
+    "foreign_intent": null,
+    "last_updated_time": "2026-04-28 16:18:57 +00:00"
+   }
+  },
+  {
+   "se_type": "google",
+   "keyword": "logiciel gratuit facturation",
+   "location_code": 2250,
+   "language_code": "fr",
+   "keyword_info": {
+    "se_type": "google",
+    "last_updated_time": "2026-10-17 02:57:45 +00:00",
+    "competition": 0.76,
+    "competition_level": "HIGH",
+    "cpc": 9.55,
+    "search_volume": 3600,
+    "low_top_of_page_bid": 2.4,
+    "high_top_of_page_bid": 9.5,
+    "categories": [
+     10019,
+     10168,
+     10537,
+     10885,
+     12209
+    ],
+    "monthly_searches": [
+     {
+      "year": 2026,
+      "month": 9,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 8,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 7,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 6,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 5,
+      "search_volume": 2900
+     },
+     {
+      "year": 2026,
+      "month": 4,
+      "search_volume": 4400
+     },
+     {
+      "year": 2026,
+      "month": 3,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 2,
+      "search_volume": 3600
+     },
+     {
+      "year": 2026,
+      "month": 1,
+      "search_volume": 4400
+     },
+     {
+      "year": 2025,
+      "month": 12,
+      "search_volume": 3600
+     },
+     {
+      "year": 2025,
+      "month": 11,
+      "search_volume": 3600
+     },
+     {
+      "year": 2025,
+      "month": 10,
+      "search_volume": 4400
+     }
+    ],
+    "search_volume_trend": {
+     "monthly": -19,
+     "quarterly": 0,
+     "yearly": -34
+    }
+   },
+   "keyword_info_normalized_with_bing": null,
+   "keyword_info_normalized_with_clickstream": null,
+   "clickstream_keyword_info": null,
+   "keyword_properties": {
+    "se_type": "google",
+    "core_keyword": "logiciel facturation gratuit",
+    "synonym_clustering_algorithm": "text_processing",
+    "keyword_difficulty": 60,
+    "detected_language": "fr",
+    "is_another_language": false,
+    "words_count": 3
+   },
+   "serp_info": null,
+   "avg_backlinks_info": {
+    "se_type": "google",
+    "backlinks": 1833.4,
+    "dofollow": 922.1,
+    "referring_pages": 1117.6,
+    "referring_domains": 87.2,
+    "referring_main_domains": 83.7,
+    "rank": 215.9,
+    "main_domain_rank": 345.8,
+    "last_updated_time": "2025-06-11 20:15:34 +00:00"
+   },
+   "search_intent_info": {
+    "se_type": "google",
+    "main_intent": "commercial",
+    "foreign_intent": null,
+    "last_updated_time": "2026-04-28 12:21:37 +00:00"
+   }
+  }
+ ]
+}

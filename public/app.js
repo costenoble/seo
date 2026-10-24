@@ -543,33 +543,136 @@
   }
 
   /* ---------- vue : mots-clés ---------- */
+  var INTENT_LABEL = { info: "Info", commercial: "Commercial", transactionnel: "Transactionnel", navigation: "Navigation" };
+  var QUESTION_RE = /^(comment|pourquoi|quel|quelle|quels|quelles|où|ou|quand|combien|qui|que|qu'|est-ce|peut-on|faut-il)\b|\?/i;
+  function kdBadge(kd) {
+    if (kd == null) return h("span", { class: "muted" }, "–");
+    var c = kd < 30 ? "easy" : kd < 50 ? "mid" : kd < 70 ? "hard" : "vhard";
+    var label = { easy: "facile", mid: "moyen", hard: "difficile", vhard: "très difficile" }[c];
+    return h("span", { class: "kd kd-" + c, title: "Difficulté " + kd + "/100 : " + label }, kd);
+  }
   function viewKeywords() {
     var KIND = { suggestion: "Suggestions", question: "Questions", variante: "Variantes", search_console: "Vos requêtes réelles" };
-    var out = h("div"), err = h("div"), seed = h("input", { type: "text", id: "kw-seed", placeholder: "ex. chaussures de randonnée", autocomplete: "off", required: true });
-    var btn = h("button", { class: "btn btn-dark", type: "submit" }, "Trouver des idées");
+    var out = h("div"), err = h("div"), seed = h("input", { type: "text", id: "kw-seed", placeholder: "ex. logiciel facturation", autocomplete: "off", required: true });
+    var country = h("select", { id: "kw-loc", "aria-label": "Pays" }, h("option", { value: 2250 }, "France"));
+    var btn = h("button", { class: "btn btn-dark", type: "submit" }, "Rechercher");
+    var cfg = { market: false };
+    api("/api/keywords/config").then(function (c) {
+      cfg = c;
+      fill(country, Object.keys(c.locations).map(function (k) { return h("option", { value: k, selected: k === "2250" }, c.locations[k]); }));
+      fill(intro, c.market ? "Volumes de recherche mensuels, difficulté, coût par clic et intention, croisés avec vos positions Search Console."
+        : "Idées issues de l'autocomplétion de Google et de vos requêtes Search Console (volumes indisponibles).");
+    });
+    var intro = h("p", {}, "");
     var form = h("form", { class: "form-row", onsubmit: function (e) {
-      e.preventDefault(); btn.disabled = true; fill(err); fill(out, h("div", { class: "empty" }, h("span", { class: "spinner" }), h("p", { class: "muted" }, "Interrogation de l'autocomplétion… quelques secondes.")));
-      api("/api/keywords", { seed: seed.value, site: sessionStorage.getItem("pos-site") || null }).then(function (ideas) { refreshMe(); renderIdeas(ideas); })
+      e.preventDefault(); btn.disabled = true; fill(err);
+      fill(out, h("div", { class: "empty" }, h("span", { class: "spinner" }), h("p", { class: "muted" }, "Recherche en cours… quelques secondes.")));
+      api("/api/keywords", { seed: seed.value, location: +country.value, site: sessionStorage.getItem("pos-site") || null })
+        .then(function (r) { refreshMe(); renderKeywordResults(out, r); })
         .catch(function (x) { fill(out); fill(err, errorBox(x)); }).then(function () { btn.disabled = false; });
-    } }, h("div", { class: "field", style: "flex:3;min-width:260px" }, h("label", { for: "kw-seed" }, "Mot-clé de départ"), seed), btn);
-    function renderIdeas(ideas) {
-      var state = { kind: "" }, chips = h("div", { class: "chips" }), pills = h("div", { class: "pills", role: "group", "aria-label": "Type d'idée" });
+    } }, h("div", { class: "field", style: "flex:3;min-width:240px" }, h("label", { for: "kw-seed" }, "Mot-clé de départ"), seed),
+      h("div", { class: "field", style: "flex:0 0 170px;min-width:150px" }, h("label", { for: "kw-loc" }, "Pays"), country), btn);
+
+    function renderKeywordResults(box, r) {
+      var m = r.market, ideas = r.ideas;
+      var parts = [];
+      if (m && m.error) parts.push(errorBox(new Error("Données de marché indisponibles : " + m.error)));
+      if (m && m.items.length) parts.push(marketTable(m, r.seed));
+      var known = {}; (m ? m.items : []).forEach(function (i) { known[i.keyword.toLowerCase()] = 1; });
+      var extra = ideas.filter(function (i) { return !known[i.idea.toLowerCase()]; });
+      if (extra.length) parts.push(freeIdeas(extra, m && m.items.length));
+      if (!parts.length) parts.push(emptyState("Aucun résultat", "Essayez un mot-clé plus court ou plus courant.", null));
+      fill(box, parts);
+    }
+
+    function marketTable(m, seedText) {
+      var hasMatch = m.items.some(function (i) { return i.group === "match"; });
+      var st = { group: hasMatch ? "match" : "", intent: "", question: false, kd: 100, minVol: 0, q: "", sort: "volume", dir: -1 };
+      var groupPills = h("div", { class: "pills", role: "group", "aria-label": "Type de mots-clés" });
+      var tbody = h("tbody"), thead = h("thead"), count = h("p", { class: "muted", "aria-live": "polite" });
+      var intents = {}; m.items.forEach(function (i) { if (i.intent) intents[i.intent] = (intents[i.intent] || 0) + 1; });
+      var pills = h("div", { class: "pills", role: "group", "aria-label": "Intention" });
+      function filtered() {
+        var q = st.q.toLowerCase();
+        return m.items.filter(function (i) {
+          return (!st.group || i.group === st.group) && (!st.intent || i.intent === st.intent) && (!st.question || QUESTION_RE.test(i.keyword)) &&
+            (i.difficulty == null || i.difficulty <= st.kd) && (i.volume || 0) >= st.minVol && (!q || i.keyword.toLowerCase().indexOf(q) !== -1);
+        }).sort(function (a, b) {
+          var va = a[st.sort], vb = b[st.sort];
+          if (st.sort === "keyword") return String(va).localeCompare(vb) * st.dir;
+          if (va == null) return 1; if (vb == null) return -1;
+          return (va - vb) * st.dir;
+        });
+      }
+      function th(label, key, num) {
+        return h("th", { class: num ? "num" : "", "aria-sort": st.sort === key ? (st.dir > 0 ? "ascending" : "descending") : "none" },
+          h("button", { type: "button", class: "th-sort", onclick: function () { st.dir = st.sort === key ? -st.dir : (key === "keyword" || key === "difficulty" || key === "position" ? 1 : -1); st.sort = key; draw(); } },
+            label + (st.sort === key ? (st.dir > 0 ? " ↑" : " ↓") : "")));
+      }
+      function draw() {
+        var nMatch = m.items.filter(function (i) { return i.group === "match"; }).length;
+        fill(groupPills, [["match", "Contiennent « " + seedText + " »", nMatch], ["related", "Associés", m.items.length - nMatch], ["", "Tous", m.items.length]].map(function (g) {
+          return h("button", { class: "pill", type: "button", "aria-pressed": String(st.group === g[0]), onclick: function () { st.group = g[0]; draw(); } }, g[1], h("span", { class: "n" }, g[2]));
+        }));
+        fill(pills, h("button", { class: "pill", type: "button", "aria-pressed": String(!st.intent && !st.question), onclick: function () { st.intent = ""; st.question = false; draw(); } }, "Toutes intentions"),
+          Object.keys(intents).map(function (k) { return h("button", { class: "pill", type: "button", "aria-pressed": String(st.intent === k), onclick: function () { st.intent = st.intent === k ? "" : k; draw(); } }, INTENT_LABEL[k] || k, h("span", { class: "n" }, intents[k])); }),
+          h("button", { class: "pill", type: "button", "aria-pressed": String(st.question), onclick: function () { st.question = !st.question; draw(); } }, "Questions"));
+        fill(thead, h("tr", {}, th("Mot-clé", "keyword"), th("Volume", "volume", 1), h("th", {}, "Tendance"), th("Difficulté", "difficulty", 1),
+          th("CPC", "cpc", 1), h("th", {}, "Intention"), th("Votre position", "position", 1)));
+        var f = filtered();
+        var vol = f.reduce(function (s, i) { return s + (i.volume || 0); }, 0);
+        count.textContent = fmt(f.length) + " mot" + (f.length > 1 ? "s" : "") + "-clé" + (f.length > 1 ? "s" : "") + " · " + fmt(vol) + " recherches par mois au total" +
+          (m.total > m.items.length ? " · " + fmt(m.total) + " existent dans la base, les " + fmt(m.items.length) + " plus recherchés sont affichés" : "");
+        fill(tbody, f.slice(0, 300).map(function (i) {
+          return h("tr", {}, h("td", {}, i.keyword), h("td", { class: "num" }, h("b", {}, fmt(i.volume))),
+            h("td", {}, spark(i.trend || [])), h("td", { class: "num" }, kdBadge(i.difficulty)),
+            h("td", { class: "num" }, i.cpc != null ? fmt(i.cpc, 2) + " €" : "–"),
+            h("td", {}, i.intent ? h("span", { class: "intent intent-" + i.intent }, INTENT_LABEL[i.intent]) : "–"),
+            h("td", { class: "num" }, i.position != null ? h("b", {}, fmt(i.position, 1)) : h("span", { class: "muted" }, "–")));
+        }));
+        if (!f.length) tbody.append(h("tr", {}, h("td", { colspan: 7, class: "muted" }, "Aucun mot-clé ne correspond aux filtres.")));
+      }
+      var kdSel = h("select", { "aria-label": "Difficulté maximum", onchange: function (e) { st.kd = +e.target.value; draw(); } },
+        [[100, "Toutes difficultés"], [29, "Facile (< 30)"], [49, "Jusqu'à moyen (< 50)"], [69, "Jusqu'à difficile (< 70)"]].map(function (o) { return h("option", { value: o[0] }, o[1]); }));
+      var volIn = h("input", { type: "number", min: 0, step: 10, placeholder: "Volume min.", "aria-label": "Volume minimum", style: "max-width:150px", oninput: function (e) { st.minVol = +e.target.value || 0; draw(); } });
+      var qIn = h("input", { type: "search", placeholder: "Contient…", "aria-label": "Filtrer les mots-clés", oninput: function (e) { st.q = e.target.value; draw(); } });
+      draw();
+      var top = m.items.filter(function (i) { return i.volume; });
+      var avgKd = top.filter(function (i) { return i.difficulty != null; });
+      return h("section", {},
+        h("div", { class: "kpis", style: "margin:28px 0 20px" },
+          kpi(fmt(m.total), "mots-clés trouvés", "blue"),
+          kpi(fmt(top.length ? top[0].volume : 0), "recherches/mois pour « " + (top.length ? top[0].keyword : seedText) + " »"),
+          kpi(avgKd.length ? Math.round(avgKd.reduce(function (s, i) { return s + i.difficulty; }, 0) / avgKd.length) : "–", "difficulté moyenne /100", "pink")),
+        groupPills, h("div", { style: "height:12px" }),
+        h("header", { style: "display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:end;margin-bottom:14px" }, pills,
+          h("div", { class: "form-row" }, qIn, kdSel, volIn,
+            h("button", { class: "btn btn-small", type: "button", onclick: function () {
+              csv([["mot-cle", "volume", "difficulte", "cpc", "intention", "votre position"]].concat(filtered().map(function (i) { return [i.keyword, i.volume, i.difficulty, i.cpc, INTENT_LABEL[i.intent] || "", i.position]; })), "mots-cles-" + seedText.replace(/\s+/g, "-") + ".csv");
+            } }, "Exporter CSV"))),
+        count, h("div", { class: "table-wrap", style: "margin-top:10px" }, h("table", {}, thead, tbody)),
+        m.cached ? h("p", { class: "note", style: "margin-top:10px" }, "Résultats issus du cache (moins de 30 jours).") : null);
+    }
+
+    function freeIdeas(ideas, hasMarket) {
+      var stI = { kind: "" }, chips = h("div", { class: "chips" }), pills = h("div", { class: "pills", role: "group", "aria-label": "Type d'idée" });
       var counts = {}; ideas.forEach(function (i) { counts[i.kind] = (counts[i.kind] || 0) + 1; });
       function draw() {
-        fill(pills, h("button", { class: "pill", type: "button", "aria-pressed": String(!state.kind), onclick: function () { state.kind = ""; draw(); } }, "Toutes", h("span", { class: "n" }, ideas.length)),
-          Object.keys(counts).map(function (k) { return h("button", { class: "pill", type: "button", "aria-pressed": String(state.kind === k), onclick: function () { state.kind = k; draw(); } }, KIND[k] || k, h("span", { class: "n" }, counts[k])); }));
-        fill(chips, ideas.filter(function (i) { return !state.kind || i.kind === state.kind; }).map(function (i) {
-          return h("button", { class: "chip " + i.kind, type: "button", title: "Copier", onclick: function (e) { if (navigator.clipboard) navigator.clipboard.writeText(i.idea); e.currentTarget.style.outline = "2px solid var(--green)"; } }, i.idea);
+        fill(pills, h("button", { class: "pill", type: "button", "aria-pressed": String(!stI.kind), onclick: function () { stI.kind = ""; draw(); } }, "Toutes", h("span", { class: "n" }, ideas.length)),
+          Object.keys(counts).map(function (k) { return h("button", { class: "pill", type: "button", "aria-pressed": String(stI.kind === k), onclick: function () { stI.kind = k; draw(); } }, KIND[k] || k, h("span", { class: "n" }, counts[k])); }));
+        fill(chips, ideas.filter(function (i) { return !stI.kind || i.kind === stI.kind; }).map(function (i) {
+          return h("button", { class: "chip " + i.kind, type: "button", title: "Copier", onclick: function (e) { if (navigator.clipboard) navigator.clipboard.writeText(i.idea); e.currentTarget.style.outline = "2px solid var(--green)"; } },
+            i.idea, i.position != null ? h("span", { class: "muted" }, " · pos. " + fmt(i.position, 1)) : null);
         }));
       }
       draw();
-      fill(out, ideas.length ? h("div", {}, h("header", { class: "section", style: "margin:36px 0 18px;display:flex;justify-content:space-between;align-items:end;gap:16px;flex-wrap:wrap" }, h("h2", {}, ideas.length + " idées"),
-        h("button", { class: "btn btn-small", type: "button", onclick: function () { csv([["idee", "type"]].concat(ideas.map(function (i) { return [i.idea, KIND[i.kind] || i.kind]; })), "idees-mots-cles.csv"); } }, "Exporter CSV")), pills, h("div", { style: "height:18px" }), chips)
-        : emptyState("Aucune idée trouvée", "Essayez un mot-clé plus courant.", null));
+      return h("section", { class: "section" }, h("h2", { style: "margin-bottom:6px" }, hasMarket ? "Autres idées" : ideas.length + " idées"),
+        h("p", { class: "note", style: "margin-bottom:16px" }, hasMarket ? "Recherches proposées par l'autocomplétion de Google, absentes de la base de volumes (souvent très précises ou récentes)." : "Cliquez sur une idée pour la copier."),
+        pills, h("div", { style: "height:16px" }), chips);
     }
-    fill(main, h("section", { class: "hero", style: "margin-bottom:28px" }, h("p", { class: "eyebrow" }, "Recherche de mots-clés"), h("h1", {}, "Ce que cherchent vraiment les internautes."),
-      h("p", {}, "Idées issues de l'autocomplétion de Google, regroupées par type, et croisées avec vos requêtes Search Console.")),
-      h("div", { class: "card" }, form, h("p", { class: "note", style: "margin-top:14px" }, "Des idées, sans volume de recherche. Cliquez sur une idée pour la copier." + (ME ? " " + fmt(ME.usage.keywords) + " / " + fmt(ME.limits.keywords_month) + " recherches ce mois-ci." : "")), err), out);
+
+    fill(main, h("section", { class: "hero", style: "margin-bottom:28px" }, h("p", { class: "eyebrow" }, "Recherche de mots-clés"), h("h1", {}, "Ce que cherchent vraiment les internautes."), intro),
+      h("div", { class: "card" }, form, h("p", { class: "note", style: "margin-top:14px" }, ME ? fmt(ME.usage.keywords) + " / " + fmt(ME.limits.keywords_month) + " recherches ce mois-ci." : ""), err), out);
   }
 
   /* ---------- vue : concurrents ---------- */

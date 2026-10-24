@@ -314,6 +314,18 @@ class Db:
         return {"days": days, "clicks": r["clicks"], "impressions": r["impressions"],
                 "position": round(r["position"], 1) if r["position"] is not None else None}
 
+    # -- cache des données payantes ----------------------------------------------------------
+    def cache_get(self, key: str, max_age_days: int = 30):
+        with self.conn() as c:
+            row = c.execute("SELECT data FROM data_cache WHERE key=%s AND fetched_at > now() - make_interval(days => %s)",
+                            (key, max_age_days)).fetchone()
+        return row["data"] if row else None
+
+    def cache_put(self, key: str, data) -> None:
+        with self.conn() as c:
+            c.execute("""INSERT INTO data_cache (key, data) VALUES (%s,%s)
+                         ON CONFLICT (key) DO UPDATE SET data=EXCLUDED.data, fetched_at=now()""", (key, Jsonb(data)))
+
     # -- mots-clés -------------------------------------------------------------------------
     def save_ideas(self, user_id: str, seed: str, ideas: list[tuple[str, str]]) -> None:
         with self.conn() as c:

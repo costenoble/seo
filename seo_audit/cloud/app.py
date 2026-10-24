@@ -19,6 +19,7 @@ from ..models import CATEGORY_LABELS, SEVERITY_LABELS
 from ..ssrf import check_public_url
 from ..urls import is_http, normalize_url, site_key
 from . import crypto, google
+from .dataforseo import LOCATIONS, DataForSEO, DataForSEOError
 from .insights import analyze
 from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
@@ -453,6 +454,22 @@ def create_app(settings: Settings | None = None) -> Flask:
         return jsonify(status=status)
 
     # -- mots-clés -------------------------------------------------------------------------------
+    def _market(kind: str, seed: str, location: int) -> tuple[dict, bool]:
+        """Données DataForSEO, servies depuis le cache partagé (30 jours) quand c'est possible."""
+        key = f"{kind}|{location}|fr|{seed.lower()}"
+        cached = db.cache_get(key)
+        if cached is not None:
+            return cached, True
+        client = DataForSEO(settings.dataforseo_login, settings.dataforseo_password)
+        data = getattr(client, kind)(seed, location)
+        db.cache_put(key, data)
+        return data, False
+
+    @app.get("/api/keywords/config")
+    @authed
+    def keywords_config():
+        return jsonify(market=bool(settings.dataforseo_login), locations=LOCATIONS)
+
     @app.post("/api/keywords")
     @authed
     def keywords():
@@ -460,17 +477,46 @@ def create_app(settings: Settings | None = None) -> Flask:
         seed = " ".join((data.get("seed") or "").split())[:80]
         if len(seed) < 2:
             abort(400, "Mot-clé trop court")
+        location = int(data.get("location") or 2250)
+        if location not in LOCATIONS:
+            abort(400, "Pays non pris en charge")
         check_monthly(g.profile["plan"], "keywords", db.usage_month(user_id()).get("keywords", 0))
+
+        # Idées gratuites : autocomplétion Google et vraies requêtes Search Console
         ideas = asyncio.run(kw.autocomplete(seed))
         site = data.get("site")
-        if site:
-            ideas += kw.from_search_console(seed, db.positions_summary(user_id(), site, 90)["queries"])
+        gsc_queries = db.positions_summary(user_id(), site, 90)["queries"] if site else []
+        ideas += kw.from_search_console(seed, gsc_queries)
         merged = {}
         for idea, kind in ideas:
             merged.setdefault(idea, kind)
+
+        # Données de marché (DataForSEO) : suggestions + mots-clés associés, dédoublonnés
+        market = None
+        if settings.dataforseo_login:
+            try:
+                sugg, cached1 = _market("keyword_suggestions", seed, location)
+                rel, cached2 = _market("related_keywords", seed, location)
+                items, seen = [], set()
+                for item in sugg["items"] + rel["items"]:
+                    k = (item.get("keyword") or "").lower()
+                    if k and k not in seen:
+                        seen.add(k)
+                        items.append(item)
+                market = {"total": sugg["total"] + rel["total"], "items": items, "cached": cached1 and cached2}
+            except DataForSEOError as exc:
+                market = {"error": str(exc), "items": []}
+
+        positions = {q["query"].lower(): q["position"] for q in gsc_queries}
+        volumes = {}
+        for item in (market or {}).get("items", []):
+            item["position"] = positions.get(item["keyword"].lower())
+            volumes[item["keyword"].lower()] = item["volume"]
         db.add_usage(user_id(), "keywords")
         db.save_ideas(user_id(), seed, list(merged.items()))
-        return jsonify(db.ideas(user_id(), seed))
+        return jsonify(seed=seed, location=location, market=market,
+                       ideas=[{"idea": i, "kind": k, "volume": volumes.get(i.lower()),
+                               "position": positions.get(i.lower())} for i, k in sorted(merged.items())])
 
     # -- fichiers statiques (développement local ; en production, Vercel sert public/) -------------
     if settings.serve_static:

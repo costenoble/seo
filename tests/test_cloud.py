@@ -174,8 +174,8 @@ def test_keywords_quota(client, pg_dsn, monkeypatch):
         return [(seed + " pas cher", "variante"), ("comment " + seed, "question")]
     monkeypatch.setattr(keywords, "autocomplete", fake)
     uid, h = new_user(pg_dsn)
-    ideas = client.post("/api/keywords", json={"seed": "tente"}, headers=h).get_json()
-    assert {i["idea"] for i in ideas} == {"tente pas cher", "comment tente"}
+    r = client.post("/api/keywords", json={"seed": "tente"}, headers=h).get_json()
+    assert {i["idea"] for i in r["ideas"]} == {"tente pas cher", "comment tente"} and r["market"] is None
     with psycopg.connect(pg_dsn) as c:
         c.execute("insert into usage_events (user_id, kind) select %s, 'keywords' from generate_series(1, 9)", (uid,))
     assert client.post("/api/keywords", json={"seed": "sac"}, headers=h).status_code == 402
@@ -270,3 +270,53 @@ def test_action_plan(client, pg_dsn, site):
     t = {x["fingerprint"]: x for x in client.get("/api/plan/127.0.0.1", headers=h).get_json()["tasks"]}["gsc:quick:/tente"]
     assert t["impact"]["impressions_pct"] == 100 and t["impact"]["position_before"] == 20 and t["impact"]["position_after"] == 10
     assert t["impact"]["final"] is False
+
+
+def test_keywords_with_market_data_and_shared_cache(pg_dsn, monkeypatch):
+    import json
+    from pathlib import Path
+    from seo_audit import keywords
+    from seo_audit.cloud import dataforseo
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "dfs_keyword_suggestions.json").read_text())
+    calls = []
+
+    def fake_post(self, path, body):
+        calls.append(path)
+        if "keyword_suggestions" in path:
+            return fixture
+        return {"total_count": 1, "items": [{"keyword_data": {"keyword": "logiciel devis", "keyword_info": {"search_volume": 1900, "cpc": 5.1},
+                                                              "keyword_properties": {"keyword_difficulty": 25},
+                                                              "search_intent_info": {"main_intent": "transactional"}}}]}
+    monkeypatch.setattr(dataforseo.DataForSEO, "_post", fake_post)
+
+    async def fake_auto(seed, **kw):
+        return [("logiciel facturation gratuit", "suggestion"), ("logiciel facturation auto entrepreneur 2026", "suggestion")]
+    monkeypatch.setattr(keywords, "autocomplete", fake_auto)
+    client = cloud_app.create_app(settings(pg_dsn, dataforseo_login="l", dataforseo_password="p")).test_client()
+    _, h = new_user(pg_dsn, plan="pro")
+    r = client.post("/api/keywords", json={"seed": "logiciel facturation", "location": 2250}, headers=h).get_json()
+    m = r["market"]
+    assert m["total"] == fixture["total_count"] + 1 and not m["cached"]
+    first = m["items"][0]
+    assert first["keyword"] == "logiciel pour facturation gratuit" and first["volume"] == 3600 and first["difficulty"] == 60
+    assert first["intent"] == "commercial" and len(first["trend"]) == 12 and first["cpc"] == 9.55
+    assert any(i["keyword"] == "logiciel devis" and i["intent"] == "transactionnel" for i in m["items"])
+    vol = {i["idea"]: i["volume"] for i in r["ideas"]}
+    assert vol["logiciel facturation gratuit"] == 3600 and vol["logiciel facturation auto entrepreneur 2026"] is None
+    # même recherche par un autre utilisateur : servie par le cache, aucun nouvel appel payant
+    _, h2 = new_user(pg_dsn, plan="pro")
+    r2 = client.post("/api/keywords", json={"seed": "Logiciel facturation", "location": 2250}, headers=h2).get_json()
+    assert r2["market"]["cached"] and len(calls) == 2
+    assert client.post("/api/keywords", json={"seed": "x y", "location": 9999}, headers=h).status_code == 400
+
+
+def test_dataforseo_errors_are_readable(monkeypatch):
+    from seo_audit.cloud import dataforseo
+
+    class R:
+        status_code, content = 200, b"x"
+        def __init__(self, data): self._d = data
+        def json(self): return self._d
+    monkeypatch.setattr(dataforseo.httpx, "post", lambda *a, **k: R({"status_code": 40200, "status_message": "Payment Required"}))
+    with pytest.raises(dataforseo.DataForSEOError, match="Crédit"):
+        dataforseo.DataForSEO("l", "p").keyword_suggestions("x", 2250)

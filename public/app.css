@@ -206,3 +206,11 @@ input[type="search"] { min-width: 240px; }
 .impact.good { background: #d9f4e6; color: #0b5a33; }
 .pages-list summary { cursor: pointer; font: 600 .9rem var(--head); }
 .pages-list ul { margin: 10px 0 0; padding-left: 18px; font-size: .9rem; display: grid; gap: 4px; }
+
+/* mots-clés */
+.kd { display: inline-block; min-width: 38px; text-align: center; font: 700 .85rem var(--head); padding: 3px 8px; border-radius: 99px; }
+.kd-easy { background: #c9f0dc; color: #0b5a33; } .kd-mid { background: #fdebc4; color: #7a5200; }
+.kd-hard { background: #ffd9c7; color: #8a3200; } .kd-vhard { background: #ffd0d0; color: #8d1f1f; }
+.intent { font: 600 .78rem var(--head); padding: 3px 10px; border-radius: 99px; background: var(--cream); white-space: nowrap; }
+.intent-commercial { background: var(--blue); } .intent-transactionnel { background: #c9f0dc; } .intent-info { background: #f1e8ff; } .intent-navigation { background: var(--pink); }
+.table-wrap td svg { width: 90px; height: 24px; display: block; }
