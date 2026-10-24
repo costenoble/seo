@@ -66,6 +66,8 @@ quelques semaines. La page `/confidentialite.html` est un modèle : faites-la co
 ## Gérer les offres (en attendant le paiement en ligne)
 
 Dans **SQL Editor** : `update profiles set plan = 'pro' where email = 'client@exemple.fr';` (valeurs : `gratuit`, `pro`, `agence`).
+Pour quelqu'un qui n'a pas encore de compte (testeur, compte offert), l'offre est appliquée à sa première connexion :
+`insert into plan_grants (email, plan) values ('testeur@exemple.fr', 'agence');`
 Les limites de chaque offre sont dans `seo_audit/cloud/plans.py`.
 
 ## Développement local

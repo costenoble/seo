@@ -121,7 +121,7 @@ async def _crawl(store, audit, deadline, url_guard):
             if not claimed:
                 break
             pages = await asyncio.gather(*(one(c) for c in claimed))
-            store.save_pages(audit["id"], [(p.url, p.to_dict()) for p in pages])
+            store.save_pages(audit["id"], [(p.url, _compact(p)) for p in pages])
             store.add_pending(audit["id"], [item for p in pages for item in crawler.discover(p)], crawler.max_pages)
             c = store.counts(audit["id"])
             store.update_audit(audit["id"], pages_done=c["done"], pages_total=c["total"])
@@ -133,6 +133,16 @@ async def _crawl(store, audit, deadline, url_guard):
             store.update_audit(audit["id"], phase="sitemap")
         else:
             store.update_audit(audit["id"], phase="finalize")
+
+
+def _compact(page: PageResult) -> dict:
+    """Version stockée d'une page : sans la liste brute des liens, déjà résumée dans internal_links et
+    external_links (aucun contrôle ne la relit). Divise environ par deux la place prise en base."""
+    data = page.to_dict()
+    for key in ("parsed", "parsed_raw"):
+        if data.get(key):
+            data[key]["links"] = []
+    return data
 
 
 def _finalize(store, audit):

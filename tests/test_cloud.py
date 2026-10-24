@@ -188,3 +188,12 @@ def test_account_deletion(pg_dsn, monkeypatch):
     assert client.post("/api/me/delete", json={}, headers=h).status_code == 400
     assert client.post("/api/me/delete", json={"confirm": "SUPPRIMER"}, headers=h).status_code == 200
     assert calls[0][0].endswith(f"/auth/v1/admin/users/{uid}") and calls[0][1]["apikey"] == "srk"
+
+
+def test_plan_granted_before_signup(client, pg_dsn):
+    email = f"{uuid.uuid4().hex[:8]}@cstlab.dev"
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into plan_grants (email, plan) values (%s, 'agence')", (email.upper(),))
+        uid = str(uuid.uuid4())
+        c.execute("insert into auth.users values (%s, %s)", (uid, email))
+        assert c.execute("select plan from profiles where user_id=%s", (uid,)).fetchone()[0] == "agence"
