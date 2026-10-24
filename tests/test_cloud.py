@@ -520,10 +520,35 @@ def test_smtp_sending(monkeypatch):
                   smtp_user="moi@cstlab.dev", smtp_password="secret", email_from="Vigie SEO <vigieseo@cstlab.dev>",
                   resend_api_key="re_ignoree")
     assert emails.enabled(st)
-    emails.send(st, "client@exemple.fr", "Sujet", "<p>Bonjour</p>", "Bonjour", "https://app/api/unsubscribe?u=1")
+    emails.send(st, "client@exemple.fr", "Sujet", '<img src="cid:vigie-logo"><p>Bonjour</p>', "Bonjour", "https://app/api/unsubscribe?u=1")
     b = boxes[0]
     assert b["host"] == "smtp.hostinger.com" and b["port"] == 465 and b["login"] == ("moi@cstlab.dev", "secret")
     m = b["msg"]
     assert m["From"] == "Vigie SEO <vigieseo@cstlab.dev>" and m["To"] == "client@exemple.fr"
     assert m["List-Unsubscribe"] == "<https://app/api/unsubscribe?u=1>" and m["Message-ID"].endswith("@cstlab.dev>")
-    assert [p.get_content_type() for p in m.iter_parts()] == ["text/plain", "text/html"]
+    assert [p.get_content_type() for p in m.iter_parts()] == ["text/plain", "multipart/related"]
+    html_part = m.get_body(("html",))
+    logo = [p for p in m.walk() if p.get_content_type() == "image/png"][0]
+    assert logo["Content-ID"] == "<vigie-logo>" and "cid:vigie-logo" in html_part.get_content()
+
+
+def test_delete_project_tracking_and_property(client, pg_dsn, site):
+    uid, h = new_user(pg_dsn, plan="pro")
+    _, bob = new_user(pg_dsn, plan="pro")
+    run_audit(client, h, site + "/")
+    client.get("/api/plan/127.0.0.1", headers=h)
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into rank_keywords (user_id, site, keyword) values (%s, 'exemple.fr', 'tente')", (uid,))
+        c.execute("insert into gsc_properties (user_id, site) values (%s, 'sc-domain:exemple.fr')", (uid,))
+        c.execute("insert into gsc_daily values (%s, 'sc-domain:exemple.fr', current_date, 'tente', 1, 10, .1, 5)", (uid,))
+    # un autre compte ne peut rien supprimer
+    assert client.delete("/api/sites/127.0.0.1", headers=bob).status_code == 404
+    assert client.delete("/api/sites/127.0.0.1", headers=h).status_code == 200
+    assert client.get("/api/sites", headers=h).get_json() == [] and client.get("/api/plan/127.0.0.1", headers=h).get_json()["tasks"] == []
+    assert client.delete("/api/tracking/exemple.fr", headers=bob).status_code == 404
+    assert client.delete("/api/tracking/exemple.fr", headers=h).status_code == 200
+    assert client.post("/api/positions/remove", json={"site": "sc-domain:exemple.fr"}, headers=bob).status_code == 404
+    assert client.post("/api/positions/remove", json={"site": "sc-domain:exemple.fr"}, headers=h).status_code == 200
+    with psycopg.connect(pg_dsn) as c:
+        assert c.execute("select count(*) from gsc_daily where user_id=%s", (uid,)).fetchone()[0] == 0
+        assert c.execute("select count(*) from rank_keywords where user_id=%s", (uid,)).fetchone()[0] == 0

@@ -254,6 +254,13 @@ def create_app(settings: Settings | None = None) -> Flask:
             abort(404, "Projet introuvable")
         return jsonify(key=key, audits=audits)
 
+    @app.delete("/api/sites/<key>")
+    @authed
+    def site_delete(key):
+        if not db.delete_project(user_id(), key):
+            abort(404, "Projet introuvable")
+        return jsonify(deleted=True)
+
     def _start_audit(url: str, kind: str, max_pages: int, parent_site: str | None = None):
         if db.running_count(user_id()) >= g.limits["running"]:
             raise QuotaError(f"{g.limits['running']} audit(s) en cours au maximum avec le plan {g.limits['label']}.")
@@ -429,6 +436,14 @@ def create_app(settings: Settings | None = None) -> Flask:
                 return jsonify(done=True, imported=imported, offset=offset, pages=pages)
         return jsonify(done=False, imported=imported, offset=offset)
 
+    @app.post("/api/positions/remove")
+    @authed
+    def positions_remove():
+        """Ne plus suivre une propriété Search Console et effacer ses données importées."""
+        if not db.delete_property(user_id(), (body().get("site") or "").strip()):
+            abort(404, "Propriété non suivie")
+        return jsonify(deleted=True)
+
     @app.post("/api/positions/sync-pages")
     @authed
     def positions_sync_pages():
@@ -563,6 +578,13 @@ def create_app(settings: Settings | None = None) -> Flask:
         added = db.add_rank_keywords(user_id(), site, keywords, location, device, volumes)
         stats = tracking.run(db, _dfs(), budget=8)  # lance tout de suite les relevés du jour
         return jsonify(added=added, stats=stats), 201
+
+    @app.delete("/api/tracking/<site>")
+    @authed
+    def tracking_site_delete(site):
+        if not db.delete_rank_site(user_id(), _domain(site)):
+            abort(404, "Aucun mot-clé suivi pour ce domaine")
+        return jsonify(deleted=True)
 
     @app.delete("/api/tracking/keywords/<keyword_id>")
     @authed

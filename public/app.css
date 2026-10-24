@@ -395,3 +395,13 @@ a.card:active { transform: translate(-1px, -1px); box-shadow: 2px 2px 0 var(--in
 .hero-art svg.hero-eye { width: 58%; height: auto; }
 @media (max-width: 720px) { .brand svg.logo { height: 28px; } }
 @media (prefers-reduced-motion: reduce) { .eye-pupil { transition: none; } .blink .eye-lid { animation: none; } }
+
+/* suppression */
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.danger-fill { background: var(--red); border-color: var(--red); color: #fff; }
+.site-card { position: relative; }
+.card-delete { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--ink); background: var(--paper);
+  color: var(--ink); font: 700 1.1rem/1 var(--head); cursor: pointer; opacity: 0; transform: scale(.8); transition: opacity .2s, transform .2s, background .2s; z-index: 2; }
+.site-card:hover .card-delete, .card-delete:focus-visible { opacity: 1; transform: none; }
+.card-delete:hover { background: var(--red); border-color: var(--red); color: #fff; }
+@media (hover: none) { .card-delete { opacity: 1; transform: none; } }

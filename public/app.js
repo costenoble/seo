@@ -365,6 +365,14 @@
     })();
   }
 
+  function confirmDialog(title, text, okLabel) {
+    return new Promise(function (resolve) {
+      function done(v) { closeOverlay(); resolve(v); }
+      modal(title, [h("p", { class: "eyebrow" }, "Confirmation"), h("h2", {}, title), h("p", { class: "muted" }, text),
+        h("div", { class: "form-row" }, h("button", { class: "btn danger-fill", type: "button", onclick: function () { done(true); } }, okLabel || "Supprimer"),
+          h("button", { class: "btn", type: "button", onclick: function () { done(false); } }, "Annuler"))]);
+    });
+  }
   function newAuditModal(prefill) {
     var max = ME ? ME.limits.max_pages : 100;
     var url = h("input", { type: "text", id: "au-url", value: prefill || "", placeholder: "www.exemple.fr", autocomplete: "off", inputmode: "url", required: true });
@@ -441,6 +449,9 @@
       else body = h("div", { class: "grid" }, sites.map(function (s, i) {
         var l = s.latest, d = l && l.comparison && delta(l.comparison.score_delta);
         return h("a", { class: "card site-card " + TINTS[i % TINTS.length], href: "#/site/" + encodeURIComponent(s.key) },
+          h("button", { class: "card-delete", type: "button", title: "Supprimer le projet", "aria-label": "Supprimer le projet " + s.key, onclick: function (e) {
+            e.preventDefault(); e.stopPropagation(); deleteProject(s.key, viewHome);
+          } }, "×"),
           h("div", { class: "row" }, h("div", {}, h("p", { class: "name" }, s.key),
             h("p", { class: "muted" }, l ? s.audits + " audit" + (s.audits > 1 ? "s" : "") + " · dernier le " + fdate(l.date, true) : "Premier audit en cours…")),
             l ? ring(l.score) : h("span", { class: "spinner" })),
@@ -449,6 +460,15 @@
       }));
       fill(main, hero, body);
     }).catch(fail);
+  }
+
+  function deleteProject(key, after) {
+    confirmDialog("Supprimer le projet " + key + " ?", "Tous ses audits, ses analyses de concurrents et son plan d'action seront effacés. Cette action est définitive.", "Supprimer le projet")
+      .then(function (ok) {
+        if (!ok) return;
+        api("/api/sites/" + encodeURIComponent(key), undefined, "DELETE").then(function () { toast("Projet " + key + " supprimé", "good"); after(); })
+          .catch(function (e) { toast(e.message, "bad"); });
+      });
   }
 
   /* ---------- vue : projet ---------- */
@@ -471,6 +491,7 @@
             h("p", { class: "muted" }, fmt(last.pages) + " pages explorées, dont " + fmt(last.indexable) + " indexables · audit du " + fdatetime(last.date)),
             sevs(last.issues_by_severity)),
           h("div", { class: "form-row" }, h("a", { class: "btn btn-dark", href: "#/plan/" + encodeURIComponent(key) }, "Plan d'action"),
+            h("button", { class: "btn btn-small danger", type: "button", onclick: function () { deleteProject(key, function () { location.hash = "#/"; }); } }, "Supprimer le projet"),
             h("a", { class: "btn", href: "#/audit/" + last.id }, "Voir les problèmes"),
             h("button", { class: "btn", type: "button", onclick: function () { newAuditModal(last.url); } }, "Relancer un audit"))),
         h("section", {}, h("h2", { style: "margin-bottom:20px" }, "Score par catégorie"),
@@ -494,8 +515,8 @@
                 h("td", {}, ok ? sevs(a.issues_by_severity) : h("span", { class: "muted" }, a.status === "failed" ? "Échec : " + (a.error || "") : "En cours…")),
                 h("td", {}, c ? [delta(c.score_delta), " ", h("span", { class: "muted" }, "+" + c.new_count + " / −" + c.fixed_count)] : ok ? h("span", { class: "muted" }, "Premier audit") : null),
                 h("td", {}, h("button", { class: "btn btn-small", type: "button", "aria-label": "Supprimer l'audit du " + fdatetime(a.date), onclick: function () {
-                  if (!confirm("Supprimer cet audit ?")) return;
-                  api("/api/audits/" + a.id, undefined, "DELETE").then(function () { toast("Audit supprimé", "good"); viewSite(key); }).catch(function (e) { toast(e.message, "bad"); });
+                  confirmDialog("Supprimer cet audit ?", "L'audit du " + fdatetime(a.date) + " et son rapport seront effacés.").then(function (ok) { if (!ok) return;
+                  api("/api/audits/" + a.id, undefined, "DELETE").then(function () { toast("Audit supprimé", "good"); viewSite(key); }).catch(function (e) { toast(e.message, "bad"); }); });
                 } }, "Supprimer")));
             }))))));
     }).catch(fail);
@@ -638,7 +659,13 @@
       var picker = tracked.length ? h("div", { class: "form-row", style: "margin:28px 0 20px" },
         h("div", { class: "field", style: "max-width:420px" }, h("label", { for: "ps-pick" }, "Propriété suivie"),
           h("select", { id: "ps-pick", onchange: function (e) { sessionStorage.setItem("pos-site", e.target.value); load(e.target.value, 28); } },
-            tracked.map(function (s) { return h("option", { value: s, selected: s === current }, s); })))) : null;
+            tracked.map(function (s) { return h("option", { value: s, selected: s === current }, s); }))),
+        h("button", { class: "btn btn-small danger", type: "button", onclick: function () {
+          var site = document.getElementById("ps-pick").value || current;
+          confirmDialog("Ne plus suivre " + site + " ?", "Les données Search Console importées pour cette propriété seront effacées de Vigie SEO (rien n'est modifié chez Google).", "Ne plus suivre").then(function (ok) {
+            if (ok) api("/api/positions/remove", { site: site }).then(function () { sessionStorage.removeItem("pos-site"); toast("Propriété retirée", "good"); viewPositions(); });
+          });
+        } }, "Ne plus suivre")) : null;
       fill(main, head, msg, form, picker, insightsBox, results);
       if (current) load(current, 28);
       else fill(results, h("div", { style: "height:28px" }), emptyState("Aucune donnée importée", "Choisissez une propriété ci-dessus et lancez l'import.", null));
@@ -1124,7 +1151,9 @@
           comps.slice(0, 3).map(function (c) { return h("td", { class: "num" }, r.pending ? "" : posCell(r.competitors[c])); }),
           h("td", { class: "url" }, r.url ? h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.url.replace(/^https?:\/\/[^/]+/, "") || "/") : ""),
           h("td", {}, h("button", { class: "btn btn-small", type: "button", "aria-label": "Ne plus suivre " + r.keyword, onclick: function () {
-            if (confirm("Ne plus suivre « " + r.keyword + " » ?")) api("/api/tracking/keywords/" + r.id, undefined, "DELETE").then(function () { viewTracking(site); });
+            confirmDialog("Ne plus suivre « " + r.keyword + " » ?", "Son historique de positions sera effacé.", "Ne plus suivre").then(function (ok) {
+              if (ok) api("/api/tracking/keywords/" + r.id, undefined, "DELETE").then(function () { toast("Mot-clé retiré", "good"); viewTracking(site); });
+            });
           } }, "Retirer")));
       }));
       if (!rows.length) tbody.append(h("tr", {}, h("td", { colspan: 12, class: "muted" }, "Aucun mot-clé suivi pour l'instant.")));
@@ -1163,7 +1192,12 @@
           h("div", { class: "field" }, compIn), h("button", { class: "btn btn-small", type: "submit" }, "Ajouter un concurrent")),
         d.suggested.length ? h("div", { style: "margin-top:12px" }, h("p", { class: "note", style: "margin-bottom:8px" }, "Souvent dans le top 10 de vos mots-clés :"),
           h("div", { class: "chips" }, d.suggested.map(function (s) { return h("button", { class: "chip", type: "button", onclick: function () { addComp(s); } }, "+ " + s); }))) : null, compErr),
-      h("section", { class: "section" }, addForm));
+      h("section", { class: "section" }, addForm),
+      d.keywords.length ? h("p", { style: "margin-top:24px" }, h("button", { class: "btn btn-small danger", type: "button", onclick: function () {
+        confirmDialog("Arrêter le suivi de " + site + " ?", "Les " + d.keywords.length + " mots-clés suivis et tout leur historique seront effacés.", "Arrêter le suivi").then(function (ok) {
+          if (ok) api("/api/tracking/" + encodeURIComponent(site), undefined, "DELETE").then(function () { toast("Suivi de " + site + " arrêté", "good"); location.hash = "#/suivi"; });
+        });
+      } }, "Arrêter le suivi de ce domaine")) : null);
   }
 
   /* ---------- vue : analyse de domaine ---------- */

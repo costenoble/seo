@@ -8,9 +8,13 @@ import ssl
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, parseaddr
 from html import escape
+from pathlib import Path
 
 import httpx
 
+# Logo joint à l'e-mail (image intégrée « cid: ») : affiché même quand la messagerie bloque les images externes.
+LOGO_CID = "vigie-logo"
+LOGO_PNG = Path(__file__).parent / "assets" / "logo-email.png"
 INK, CREAM, GREEN, BLUE, PINK, MINT, MUTED = "#0b0b0b", "#faf4f2", "#2bb673", "#d2edff", "#ffc3c3", "#d9f4e6", "#6b6461"
 HEAD = "Poppins,'Helvetica Neue',Arial,sans-serif"
 BODY = "Lato,'Helvetica Neue',Arial,sans-serif"
@@ -41,6 +45,9 @@ def send_smtp(settings, to: str, subject: str, html: str, text: str, unsubscribe
         msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
+    if f"cid:{LOGO_CID}" in html:
+        msg.get_body(("html",)).add_related(LOGO_PNG.read_bytes(), maintype="image", subtype="png",
+                                             cid=f"<{LOGO_CID}>", filename="vigie-seo.png", disposition="inline")
     try:
         if settings.smtp_port == 465:
             server = smtplib.SMTP_SSL(settings.smtp_host, 465, context=ssl.create_default_context(), timeout=20)
@@ -61,7 +68,10 @@ def send_resend(api_key: str, sender: str, to: str, subject: str, html: str, tex
         headers = {"List-Unsubscribe": f"<{unsubscribe_url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
     try:
         r = httpx.post("https://api.resend.com/emails", timeout=20, headers={"Authorization": f"Bearer {api_key}"},
-                       json={"from": sender, "to": [to], "subject": subject, "html": html, "text": text, "headers": headers})
+                       json={"from": sender, "to": [to], "subject": subject, "html": html, "text": text, "headers": headers,
+                             "attachments": [{"filename": "vigie-seo.png", "content_id": LOGO_CID,
+                                              "content": base64.b64encode(LOGO_PNG.read_bytes()).decode()}]
+                             if f"cid:{LOGO_CID}" in html else []})
     except httpx.HTTPError as exc:
         raise EmailError(f"Envoi impossible : {type(exc).__name__}") from exc
     if r.status_code >= 300:
@@ -129,7 +139,7 @@ def layout(app_url: str, title: str, intro: str, blocks: str, cta: tuple[str, st
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{CREAM}"><tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px">
 <tr><td style="background:{INK};border-radius:26px;padding:30px 32px 34px">
-<img src="{app_url}/img/vigie-logo-dark.png" width="160" height="38" alt="Vigie SEO" style="display:block;border:0;margin:0 0 26px">
+<img src="cid:{LOGO_CID}" width="160" height="38" alt="Vigie SEO" style="display:block;border:0;margin:0 0 26px">
 <h1 style="margin:0 0 10px;font-family:{HEAD};font-size:30px;line-height:1.15;color:{CREAM};letter-spacing:-.5px">{escape(title)}</h1>
 {_p(intro, 16, "#c9c1bd", margin="0")}</td></tr>
 <tr><td style="height:18px"></td></tr>

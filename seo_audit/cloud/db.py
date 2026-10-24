@@ -104,6 +104,27 @@ class Db:
             return None
         return dict(row) if row else None
 
+    def delete_project(self, user_id: str, site: str) -> int:
+        """Supprime un projet : ses audits, ceux de ses concurrents et son plan d'action."""
+        with self.conn() as c:
+            n = c.execute("""DELETE FROM audits WHERE user_id=%s AND ((kind='site' AND site=%s) OR parent_site=%s)""",
+                          (user_id, site, site)).rowcount
+            c.execute("DELETE FROM tasks WHERE user_id=%s AND site=%s", (user_id, site))
+            return n
+
+    def delete_rank_site(self, user_id: str, site: str) -> int:
+        with self.conn() as c:
+            n = c.execute("DELETE FROM rank_keywords WHERE user_id=%s AND site=%s", (user_id, site)).rowcount
+            c.execute("DELETE FROM rank_competitors WHERE user_id=%s AND site=%s", (user_id, site))
+            return n
+
+    def delete_property(self, user_id: str, site: str) -> int:
+        with self.conn() as c:
+            n = c.execute("DELETE FROM gsc_properties WHERE user_id=%s AND site=%s", (user_id, site)).rowcount
+            for table in ("gsc_daily", "gsc_query_pages", "gsc_pages"):
+                c.execute(f"DELETE FROM {table} WHERE user_id=%s AND site=%s", (user_id, site))
+            return n
+
     def delete_audit(self, user_id: str, audit_id: str) -> bool:
         with self.conn() as c:
             return c.execute("DELETE FROM audits WHERE id=%s AND user_id=%s", (audit_id, user_id)).rowcount == 1
