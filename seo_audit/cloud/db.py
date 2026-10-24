@@ -214,6 +214,35 @@ class Db:
                 """SELECT date, clicks, impressions, position FROM gsc_daily
                    WHERE user_id=%s AND site=%s AND query=%s ORDER BY date""", (user_id, site, query))]
 
+    def replace_gsc_pages(self, user_id: str, site: str, query_pages: list[dict], pages: list[dict]) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM gsc_query_pages WHERE user_id=%s AND site=%s", (user_id, site))
+            c.execute("DELETE FROM gsc_pages WHERE user_id=%s AND site=%s", (user_id, site))
+            cur = c.cursor()
+            cur.executemany("""INSERT INTO gsc_query_pages (user_id, site, query, page, clicks, impressions, position)
+                               VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                            [(user_id, site, r["query"], r["page"], r["clicks"], r["impressions"], r["position"])
+                             for r in query_pages])
+            cur.executemany("""INSERT INTO gsc_pages (user_id, site, page, clicks, impressions, position)
+                               VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                            [(user_id, site, r["page"], r["clicks"], r["impressions"], r["position"]) for r in pages])
+            c.execute("UPDATE gsc_properties SET pages_synced_at=now() WHERE user_id=%s AND site=%s", (user_id, site))
+
+    def gsc_pages_snapshot(self, user_id: str, site: str) -> tuple[list[dict], list[dict]]:
+        with self.conn() as c:
+            qp = c.execute("""SELECT query, page, clicks, impressions, position FROM gsc_query_pages
+                              WHERE user_id=%s AND site=%s""", (user_id, site)).fetchall()
+            pages = c.execute("""SELECT page, clicks, impressions, position FROM gsc_pages
+                                 WHERE user_id=%s AND site=%s""", (user_id, site)).fetchall()
+        return qp, pages
+
+    def latest_report_for_site(self, user_id: str, site_key: str) -> dict | None:
+        with self.conn() as c:
+            row = c.execute("""SELECT r.issues, r.pages FROM audits a JOIN audit_reports r ON r.audit_id = a.id
+                               WHERE a.user_id=%s AND a.site=%s AND a.kind='site' AND a.status='done'
+                               ORDER BY a.finished_at DESC LIMIT 1""", (user_id, site_key)).fetchone()
+        return dict(row) if row else None
+
     # -- mots-clés -------------------------------------------------------------------------
     def save_ideas(self, user_id: str, seed: str, ideas: list[tuple[str, str]]) -> None:
         with self.conn() as c:

@@ -147,6 +147,10 @@ def test_google_search_console(client, pg_dsn, monkeypatch):
     rows = [{"date": f"2026-03-{d:02d}", "query": "randonnée", "clicks": 1, "impressions": 10, "ctr": .1,
              "position": 10 - (d > 15) * 4} for d in range(1, 31)]
     monkeypatch.setattr(google, "search_analytics", lambda token, site, start, end, offset=0: rows if offset == 0 else [])
+
+    def pages_down(*a, **kw):
+        raise google.GoogleError("Quota Google dépassé")
+    monkeypatch.setattr(google, "search_analytics_by", pages_down)  # l'import doit réussir quand même
     assert client.get("/api/google/sites", headers=h).status_code == 409  # pas encore connecté
     assert client.post("/api/google/token", json={"refresh_token": "rt-secret"}, headers=h).status_code == 200
     with psycopg.connect(pg_dsn) as c:
@@ -154,7 +158,7 @@ def test_google_search_console(client, pg_dsn, monkeypatch):
     assert "rt-secret" not in stored  # chiffré
     assert client.post("/api/positions/sync", json={"site": "sc-domain:autre.fr"}, headers=h).status_code == 403
     r = client.post("/api/positions/sync", json={"site": "sc-domain:exemple.fr", "days": 30}, headers=h).get_json()
-    assert r["done"] and r["imported"] == 30
+    assert r["done"] and r["imported"] == 30 and r["pages"] is False
     summary = client.get("/api/positions/summary?site=sc-domain:exemple.fr&days=15", headers=h).get_json()
     assert summary["queries"][0]["position"] == 6 and summary["queries"][0]["previous_position"] == 10
     _, other = new_user(pg_dsn)
@@ -197,3 +201,29 @@ def test_plan_granted_before_signup(client, pg_dsn):
         uid = str(uuid.uuid4())
         c.execute("insert into auth.users values (%s, %s)", (uid, email))
         assert c.execute("select plan from profiles where user_id=%s", (uid,)).fetchone()[0] == "agence"
+
+
+def test_insights_endpoint(client, pg_dsn, monkeypatch):
+    uid, h = new_user(pg_dsn)
+    monkeypatch.setattr(google, "access_token", lambda rt, cid, cs: "acc")
+    monkeypatch.setattr(google, "list_sites", lambda token: [{"site": "sc-domain:exemple.fr", "level": "siteOwner"}])
+    monkeypatch.setattr(google, "search_analytics", lambda token, site, start, end, offset=0: [
+        {"date": "2026-03-01", "query": "exemple", "clicks": 5, "impressions": 200, "ctr": .02, "position": 4.0}] if offset == 0 else [])
+
+    def by(token, site, start, end, dims, offset=0):
+        if offset:
+            return []
+        if dims == ["page"]:
+            return [{"page": "https://exemple.fr/", "clicks": 5, "impressions": 200, "position": 4.0},
+                    {"page": "http://exemple.fr/", "clicks": 0, "impressions": 20, "position": 8.0}]
+        return [{"query": "exemple", "page": "https://exemple.fr/", "clicks": 5, "impressions": 200, "position": 4.0}]
+    monkeypatch.setattr(google, "search_analytics_by", by)
+    client.post("/api/google/token", json={"refresh_token": "rt"}, headers=h)
+    assert client.get("/api/positions/insights?site=sc-domain:exemple.fr", headers=h).status_code == 404  # pas suivie
+    r = client.post("/api/positions/sync", json={"site": "sc-domain:exemple.fr", "days": 30}, headers=h).get_json()
+    assert r["done"] and r["pages"]
+    data = client.get("/api/positions/insights?site=sc-domain:exemple.fr", headers=h).get_json()
+    ids = {i["id"] for i in data["insights"]}
+    assert {"brand", "technical"} <= ids and data["overview"]["has_pages"]
+    _, other = new_user(pg_dsn)
+    assert client.get("/api/positions/insights?site=sc-domain:exemple.fr", headers=other).status_code == 404

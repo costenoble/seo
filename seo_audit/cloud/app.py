@@ -18,6 +18,7 @@ from ..models import CATEGORY_LABELS, SEVERITY_LABELS
 from ..ssrf import check_public_url
 from ..urls import is_http, normalize_url, site_key
 from . import crypto, google
+from .insights import analyze
 from .auth import AuthError, verify_token
 from .config import APP_NAME, Settings
 from .db import Db
@@ -132,8 +133,21 @@ def create_app(settings: Settings | None = None) -> Flask:
             rows = google.search_analytics(access, site, start, end, offset)
             db.save_gsc_rows(uid, site, rows)
             if len(rows) < google.PAGE_SIZE:
-                return
+                break
             offset += google.PAGE_SIZE
+        _sync_pages(uid, site, access)
+
+    def _sync_pages(uid, site, access):
+        """Instantané requête × page et page sur 90 jours (au plus 2 × 25 000 couples requête-page)."""
+        start, end = google.date_range(90)
+        query_pages = []
+        for offset in (0, google.PAGE_SIZE):
+            rows = google.search_analytics_by(access, site, start, end, ["query", "page"], offset)
+            query_pages += rows
+            if len(rows) < google.PAGE_SIZE:
+                break
+        pages = google.search_analytics_by(access, site, start, end, ["page"])
+        db.replace_gsc_pages(uid, site, query_pages, pages)
 
     # -- compte -------------------------------------------------------------------------------
     @app.get("/api/me")
@@ -340,8 +354,37 @@ def create_app(settings: Settings | None = None) -> Flask:
             offset += len(rows)
             if len(rows) < google.PAGE_SIZE:
                 db.mark_synced(user_id(), site)
-                return jsonify(done=True, imported=imported, offset=offset)
+                pages = time.monotonic() - t0 < settings.step_budget / 2  # sinon le navigateur appelle /sync-pages
+                if pages:
+                    try:
+                        _sync_pages(user_id(), site, access)
+                    except (google.GoogleError, httpx.HTTPError) as exc:  # les positions sont déjà enregistrées
+                        log.warning("Analyse des pages %s : %s", site, exc)
+                        pages = False
+                return jsonify(done=True, imported=imported, offset=offset, pages=pages)
         return jsonify(done=False, imported=imported, offset=offset)
+
+    @app.post("/api/positions/sync-pages")
+    @authed
+    def positions_sync_pages():
+        site = (body().get("site") or "").strip()
+        if site not in {p["site"] for p in db.properties(user_id())}:
+            abort(404, "Propriété non suivie")
+        _sync_pages(user_id(), site, _access())
+        return jsonify(done=True)
+
+    @app.get("/api/positions/insights")
+    @authed
+    def positions_insights():
+        site = request.args.get("site", "")
+        if site not in {p["site"] for p in db.properties(user_id())}:
+            abort(404, "Propriété non suivie")
+        queries = db.positions_summary(user_id(), site, 90)["queries"]
+        recent = db.positions_summary(user_id(), site, 28)["queries"]
+        query_pages, pages = db.gsc_pages_snapshot(user_id(), site)
+        host = site.split(":", 1)[1] if site.startswith("sc-domain:") else site
+        audit = db.latest_report_for_site(user_id(), site_key(host if "://" in host else "https://" + host))
+        return jsonify(analyze(site, queries, query_pages, pages, audit, recent))
 
     # -- mots-clés -------------------------------------------------------------------------------
     @app.post("/api/keywords")

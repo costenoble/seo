@@ -429,8 +429,8 @@
           api("/api/positions/sync", { site: sel.value, days: +days.value, offset: offset }).then(function (r) {
             total += r.imported;
             if (!r.done) return chunk(r.offset);
-            syncStatus.textContent = fmt(total) + " lignes importées.";
-            viewPositions();
+            syncStatus.textContent = fmt(total) + " lignes importées." + (r.pages === false ? " Analyse des pages…" : "");
+            return (r.pages === false ? api("/api/positions/sync-pages", { site: sel.value }) : Promise.resolve()).then(function () { viewPositions(); });
           }).catch(function (x) { syncBtn.disabled = false; syncStatus.textContent = ""; fill(err, errorBox(x)); });
         })(0);
       } }, h("div", { style: "display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center" },
@@ -441,8 +441,9 @@
           h("div", { class: "field", style: "flex:0 0 150px;min-width:130px" }, h("label", { for: "ps-days" }, "Historique"), days), syncBtn),
         h("p", { class: "note" }, "Ensuite, les propriétés importées sont mises à jour automatiquement chaque jour. Votre offre permet d'en suivre " + st.max_properties + "."), syncStatus, err);
 
-      var results = h("div");
+      var results = h("div"), insightsBox = h("div");
       function load(site, n) {
+        loadInsights(insightsBox, site);
         fill(results, h("div", { class: "empty" }, h("span", { class: "spinner" })));
         api("/api/positions/summary?site=" + encodeURIComponent(site) + "&days=" + n).then(function (d) { renderPositions(results, d); }).catch(function (e) { fill(results, errorBox(e)); });
       }
@@ -450,11 +451,43 @@
         h("div", { class: "field", style: "max-width:420px" }, h("label", { for: "ps-pick" }, "Propriété suivie"),
           h("select", { id: "ps-pick", onchange: function (e) { sessionStorage.setItem("pos-site", e.target.value); load(e.target.value, 28); } },
             tracked.map(function (s) { return h("option", { value: s, selected: s === current }, s); })))) : null;
-      fill(main, head, msg, form, picker, results);
+      fill(main, head, msg, form, picker, insightsBox, results);
       if (current) load(current, 28);
       else fill(results, h("div", { style: "height:28px" }), emptyState("Aucune donnée importée", "Choisissez une propriété ci-dessus et lancez l'import.", null));
     }).catch(fail);
   }
+  /* Recommandations calculées à partir de la Search Console (et du dernier audit du site). */
+  var PRIO = { high: ["pink", "Priorité haute"], medium: ["blue", "À prévoir"], low: ["", "À surveiller"], good: ["good", "Bon point"] };
+  function loadInsights(box, site) {
+    fill(box, h("div", { class: "card", style: "margin-bottom:28px" }, h("span", { class: "spinner" }), " Analyse de vos données…"));
+    api("/api/positions/insights?site=" + encodeURIComponent(site)).then(function (d) { renderInsights(box, d, site); })
+      .catch(function (e) { fill(box, errorBox(e)); });
+  }
+  function renderInsights(box, d, site) {
+    var o = d.overview, n = 0;
+    var cards = d.insights.map(function (i) {
+      var p = PRIO[i.priority] || PRIO.low;
+      if (i.priority !== "good") n++;
+      return h("article", { class: "card insight " + p[0] },
+        h("div", { class: "insight-head" }, i.priority !== "good" ? h("span", { class: "insight-n", "aria-hidden": "true" }, n) : h("span", { class: "insight-n ok", "aria-hidden": "true" }, "✓"),
+          h("div", {}, h("p", { class: "eyebrow", style: "margin:0 0 4px" }, p[1]), h("h3", {}, i.title))),
+        h("p", {}, i.text),
+        i.chips.length ? h("div", { class: "chips small" }, i.chips.map(function (c) { return h("span", { class: "chip" }, c); })) : null,
+        i.table ? h("div", { class: "table-wrap inner" }, h("table", {}, h("thead", {}, h("tr", {}, i.table.columns.map(function (c, k) { return h("th", { class: k && typeof i.table.rows[0][k] === "number" ? "num" : "" }, c); }))),
+          h("tbody", {}, i.table.rows.map(function (r) { return h("tr", {}, r.map(function (v, k) { return h("td", { class: typeof v === "number" ? "num" : (k === 0 ? "url" : "") }, typeof v === "number" ? fmt(v, 1) : v); })); })))) : null,
+        i.action ? h("p", { class: "insight-action" }, "→ " + i.action) : null);
+    });
+    var note = d.note ? h("div", { class: "card", style: "display:flex;gap:16px;align-items:center;flex-wrap:wrap;justify-content:space-between" }, h("p", { class: "note" }, d.note),
+      !o.has_pages && o.impressions >= 50 ? h("button", { class: "btn btn-small", type: "button", onclick: function (e) {
+        e.currentTarget.disabled = true; e.currentTarget.textContent = "Analyse en cours…";
+        api("/api/positions/sync-pages", { site: site }).then(function () { loadInsights(box, site); }).catch(function (x) { fill(box, errorBox(x)); });
+      } }, "Analyser mes pages") : null) : null;
+    fill(box, h("section", { style: "margin-bottom:44px" },
+      h("header", { style: "margin-bottom:18px" }, h("h2", {}, "Ce qu'il faut faire"),
+        h("p", { class: "muted", style: "margin-top:6px" }, "Sur 90 jours : " + fmt(o.clicks) + " clics, " + fmt(o.impressions) + " impressions" + (o.position ? ", position moyenne " + fmt(o.position, 1) : "") + ". Par ordre de priorité.")),
+      note, h("div", { class: "insights" }, cards)));
+  }
+
   function renderPositions(box, d) {
     if (!d.last_date) { fill(box, emptyState("Pas encore de données", "Lancez un import pour cette propriété.", null)); return; }
     var q = d.queries, clicks = q.reduce(function (s, x) { return s + x.clicks; }, 0), imps = q.reduce(function (s, x) { return s + x.impressions; }, 0);

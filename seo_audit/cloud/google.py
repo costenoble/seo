@@ -56,6 +56,15 @@ def search_analytics(token: str, site: str, start: str, end: str, offset: int = 
              "ctr": r["ctr"], "position": r["position"]} for r in data.get("rows", [])]
 
 
+def search_analytics_by(token: str, site: str, start: str, end: str, dimensions: list[str],
+                        offset: int = 0) -> list[dict]:
+    """Agrégats sur la période (sans la date) : par ["query", "page"] ou par ["page"]."""
+    data = _call("POST", f"{API}/sites/{quote(site, safe='')}/searchAnalytics/query", token, json={
+        "startDate": start, "endDate": end, "dimensions": dimensions, "rowLimit": PAGE_SIZE, "startRow": offset})
+    return [{**dict(zip(dimensions, r["keys"])), "clicks": r["clicks"], "impressions": r["impressions"],
+             "position": r["position"]} for r in data.get("rows", [])]
+
+
 def revoke(refresh_token: str) -> None:
     try:
         httpx.post("https://oauth2.googleapis.com/revoke", data={"token": refresh_token}, timeout=10)

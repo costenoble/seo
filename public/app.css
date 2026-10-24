@@ -187,3 +187,16 @@ input[type="search"] { min-width: 240px; }
 .th-sort { border: 0; padding: 0; background: none; font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; cursor: pointer; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .plan.ink .price small { color: #b9b2ae; }
+
+/* recommandations */
+.insights { display: grid; gap: 18px; }
+.insight { display: grid; gap: 14px; }
+.insight.good { background: #d9f4e6; }
+.insight-head { display: flex; gap: 16px; align-items: center; }
+.insight-n { flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--ink); color: #fff; display: grid; place-items: center; font: 700 1.1rem var(--head); }
+.insight-n.ok { background: var(--green-ink); }
+.insight-action { font-weight: 700; }
+.table-wrap.inner { border-radius: var(--r-md); padding: 4px 8px; }
+.table-wrap.inner td, .table-wrap.inner th { padding: 10px; font-size: .9rem; }
+.chips.small .chip { font-size: .85rem; padding: 5px 12px; cursor: default; background: rgba(255,255,255,.7); }
+.chips.small .chip:hover { background: rgba(255,255,255,.7); color: var(--ink); }
