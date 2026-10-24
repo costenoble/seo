@@ -413,6 +413,86 @@
             : h("button", { class: "btn " + (featured ? "btn-green" : "btn-dark"), type: "button", onclick: signIn }, p.price ? "Essayer gratuitement" : "Commencer"));
     }));
   }
+  /* Démo vivante de la page d'accueil : un mini tableau de bord qui se joue en boucle. */
+  function liveDemo() {
+    var card = h("div", { class: "live", "aria-label": "Aperçu animé de Vigie SEO", role: "img" });
+    var scoreRing = h("div");
+    var curve = svg("svg", { class: "live-curve", viewBox: "0 0 300 110", preserveAspectRatio: "none", "aria-hidden": "true" });
+    var pts = [[0, 92], [30, 88], [60, 90], [90, 78], [120, 80], [150, 66], [180, 60], [210, 46], [240, 40], [270, 24], [300, 14]];
+    var d = pts.map(function (p, i) { return (i ? "L" : "M") + p[0] + " " + p[1]; }).join(" ");
+    var line = svg("path", { class: "live-line", d: d, pathLength: 100 }), area = svg("path", { class: "live-area", d: d + " L300 110 L0 110 Z" });
+    var tip = svg("circle", { class: "live-tip", cx: 300, cy: 14, r: 5 });
+    curve.append(area, line, tip);
+    var KW = [["logiciel facture artisan", 12, 4], ["devis en ligne", 9, 3], ["facture électronique", 21, 8]];
+    var kwRows = KW.map(function (k) {
+      var pos = h("b", { class: "live-pos" }, k[1]), badge = h("span", { class: "live-badge" }, "▲ +" + (k[1] - k[2]));
+      return { el: h("li", {}, h("span", { class: "live-kw" }, k[0]), pos, badge), pos: pos, badge: badge, from: k[1], to: k[2] };
+    });
+    var pops = h("div", { class: "live-pops" });
+    var NOTES = [["good", "✓ 3 erreurs corrigées"], ["good", "▲ Entrée dans le top 10"], ["", "✉ Résumé de la semaine envoyé"]];
+    fill(card,
+      h("div", { class: "live-head" }, eyeMark(44, "live-eye"), h("div", {}, h("b", {}, "votre-site.fr"), h("span", { class: "live-sub" }, "Audit de ce matin")),
+        h("span", { class: "live-badge-on" }, h("span", { class: "dot-live" }), "En direct")),
+      h("div", { class: "live-grid" },
+        h("div", { class: "live-tile" }, scoreRing, h("span", { class: "live-label" }, "Score de santé")),
+        h("div", { class: "live-tile live-chart" }, h("span", { class: "live-label" }, "Clics Google"), h("b", { class: "live-up" }, "+38 %"), curve)),
+      h("ul", { class: "live-kws" }, kwRows.map(function (r) { return r.el; })), pops);
+
+    var timers = [];
+    function later(ms, fn) { timers.push(setTimeout(function () { if (card.isConnected) fn(); }, ms)); }
+    function count(el, from, to, ms) {
+      var t0 = null;
+      (function step(t) { if (!card.isConnected) return; if (t0 === null) t0 = t; var k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+        el.textContent = Math.round(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); })(performance.now());
+    }
+    function play() {
+      timers.forEach(clearTimeout); timers = [];
+      card.classList.remove("play"); void card.offsetWidth; card.classList.add("play");
+      delete scoreRing.dataset.counted; fill(scoreRing, ring(92, 92)); fill(pops);
+      kwRows.forEach(function (r) { r.pos.textContent = r.from; r.el.classList.remove("up"); });
+      if (REDUCED) { kwRows.forEach(function (r) { r.pos.textContent = r.to; r.el.classList.add("up"); }); return; }
+      kwRows.forEach(function (r, i) { later(1600 + i * 650, function () { count(r.pos, r.from, r.to, 900); r.el.classList.add("up"); }); });
+      NOTES.forEach(function (n, i) {
+        later(2600 + i * 1700, function () {
+          Array.prototype.forEach.call(pops.children, function (old) { old.classList.add("out"); });
+          var t = h("div", { class: "live-pop " + n[0] }, n[1]); pops.append(t);
+          later(2600, function () { t.classList.add("out"); later(400, function () { t.remove(); }); });
+        });
+      });
+      later(10500, play);
+    }
+    // démarre quand la carte est à l'écran
+    var started = false;
+    var io = new IntersectionObserver(function (es) { if (es[0].isIntersecting && !started) { started = true; play(); } });
+    setTimeout(function () { io.observe(card); }, 0);
+    return card;
+  }
+
+  /* Pied de page : grande carte sur la page publique, version légère dans l'application. */
+  function renderFooter() {
+    var foot = document.getElementById("foot");
+    if (SESSION) {
+      fill(foot, h("div", { class: "foot" }, eyeMark(26), h("span", {}, "© Vigie SEO"),
+        h("a", { href: "/confidentialite.html" }, "Confidentialité"), h("a", { href: "mailto:vigieseo@cstlab.dev" }, "Contact"), h("a", { href: "#/offres" }, "Offres")));
+      return;
+    }
+    function col(title, links) {
+      return h("div", { class: "fcol" }, h("p", { class: "fcol-title" }, title), h("ul", {}, links.map(function (l) {
+        return h("li", {}, h("a", l[2] ? { href: l[1], onclick: l[2] } : { href: l[1] }, l[0]));
+      })));
+    }
+    fill(foot, h("div", { class: "bigfoot" },
+      h("div", { class: "bigfoot-cta" }, h("h2", {}, "Prêt à garder un œil sur votre site ?"),
+        h("p", {}, "Premier audit en quelques minutes. Gratuit, sans carte bancaire."),
+        h("button", { class: "btn btn-green", type: "button", onclick: signIn }, "Commencer gratuitement")),
+      h("div", { class: "bigfoot-cols" },
+        col("Produit", [["Audit technique", "#/"], ["Suivi des positions", "#/"], ["Mots-clés et domaines", "#/"], ["Offres", "#/offres"]]),
+        col("Ressources", [["Se connecter", "#/", function (e) { e.preventDefault(); signIn(); }], ["Contact", "mailto:vigieseo@cstlab.dev"]]),
+        col("Légal", [["Confidentialité", "/confidentialite.html"]])),
+      h("div", { class: "bigfoot-bottom" }, h("span", { class: "bigfoot-brand" }, eyeMark(34), h("b", {}, "vigie "), h("b", { class: "g" }, "seo")),
+        h("span", {}, "© " + new Date().getFullYear() + " Vigie SEO · Fait en France"))));
+  }
+
   function viewLanding(scrollToOffers) {
     var feats = [
       ["audit", "Audit technique complet", "Une quarantaine de contrôles : erreurs, redirections, indexabilité, balises, hreflang, données structurées, contenus dupliqués.", "blue"],
@@ -427,8 +507,7 @@
           h("div", { class: "actions" }, h("button", { class: "btn btn-dark", type: "button", onclick: signIn }, "Commencer gratuitement"),
             h("a", { class: "btn", href: "#/offres" }, "Voir les offres")),
           h("p", { class: "note" }, "Connexion avec votre compte Google. Sans carte bancaire.")),
-        h("div", { class: "hero-art", "aria-hidden": "true" }, eyeMark(280, "hero-eye"),
-          h("span", { class: "bubble", style: "top:12%;left:8%" }, "Score 92 ▲"), h("span", { class: "bubble", style: "bottom:14%;right:6%" }, "3 erreurs corrigées"))),
+        liveDemo()),
       h("section", {}, h("h2", { style: "margin-bottom:22px" }, "Tout ce qu'il faut pour progresser"),
         h("div", { class: "features" }, feats.map(function (f) { return h("div", { class: "card " + f[3] }, icon(f[0]), h("h3", {}, f[1]), h("p", {}, f[2])); }))),
       h("section", { class: "section", id: "offres" }, h("h2", { style: "margin-bottom:22px" }, "Des offres simples"), plansGrid(null)));
@@ -1516,7 +1595,7 @@
     SESSION = session;
     if (booted && prevId === newId) return;
     booted = true;
-    renderTop();
+    renderTop(); renderFooter();
     if (!session) { ME = null; if (prevId) location.hash = "#/"; route(); return; }
     var next = sessionStorage.getItem("after-login");
     sessionStorage.removeItem("after-login");
