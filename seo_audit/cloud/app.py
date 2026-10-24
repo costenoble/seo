@@ -21,6 +21,7 @@ from ..urls import is_http, normalize_url, site_key
 from . import crypto, google
 from .dataforseo import LOCATIONS, DataForSEO, DataForSEOError
 from .insights import analyze
+from . import tracking
 from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
 from .config import APP_NAME, Settings
@@ -116,7 +117,9 @@ def create_app(settings: Settings | None = None) -> Flask:
         if not settings.cron_secret or not hmac.compare_digest(request.headers.get("Authorization", ""), expected):
             return jsonify(error="Non autorisé"), 401
         start = time.monotonic()
-        touched = asyncio.run(run_tick(db.store, budget=settings.step_budget, url_guard=guard))
+        touched = asyncio.run(run_tick(db.store, budget=settings.step_budget * 0.6, url_guard=guard))
+        ranks = tracking.run(db, _dfs(), budget=max(5.0, settings.step_budget - (time.monotonic() - start) - 10)) \
+            if settings.dataforseo_login else None
         synced = []
         while time.monotonic() - start < settings.step_budget - 10:  # imports Search Console quotidiens
             due = db.due_properties(limit=1)
@@ -129,7 +132,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             except Exception as exc:  # une propriété en erreur ne bloque pas les autres
                 log.warning("Import quotidien %s : %s", p["site"], exc)
             db.mark_synced(p["user_id"], p["site"])
-        return jsonify(audits=touched, gsc=synced)
+        return jsonify(audits=touched, gsc=synced, ranks=ranks)
 
     def _sync_recent(uid, site, enc):
         token = crypto.decrypt(settings.token_key, enc)
@@ -454,14 +457,107 @@ def create_app(settings: Settings | None = None) -> Flask:
         return jsonify(status=status)
 
     # -- mots-clés -------------------------------------------------------------------------------
+    def _dfs() -> DataForSEO:
+        return DataForSEO(settings.dataforseo_login, settings.dataforseo_password)
+
+    # -- suivi de positions -------------------------------------------------------------------------
+    def _domain(raw: str) -> str:
+        raw = (raw or "").strip().lower()
+        host = urlsplit(raw if "://" in raw else "https://" + raw).hostname or ""
+        if "." not in host or len(host) > 253:
+            abort(400, "Domaine invalide")
+        return site_key("https://" + host)
+
+    @app.get("/api/tracking")
+    @authed
+    def tracking_sites():
+        return jsonify(sites=db.rank_sites(user_id()), projects=[s["key"] for s in db.list_sites(user_id())],
+                       used=db.rank_count(user_id()), limit=g.limits["tracked_keywords"],
+                       enabled=bool(settings.dataforseo_login), locations=LOCATIONS)
+
+    @app.get("/api/tracking/<site>")
+    @authed
+    def tracking_overview(site):
+        site = _domain(site)
+        competitors = db.rank_competitors(user_id(), site)
+        data = tracking.overview(site, db.rank_keywords(user_id(), site), db.rank_history(user_id(), site, 30),
+                                 db.rank_latest(user_id(), site), db.rank_latest(user_id(), site, 7), competitors)
+        return jsonify({**data, "used": db.rank_count(user_id()), "limit": g.limits["tracked_keywords"]})
+
+    @app.post("/api/tracking/<site>/keywords")
+    @authed
+    def tracking_add(site):
+        if not settings.dataforseo_login:
+            abort(503, "Suivi de positions indisponible : service de données non configuré")
+        site, data = _domain(site), body()
+        location, device = int(data.get("location") or 2250), data.get("device") or "desktop"
+        if location not in LOCATIONS or device not in ("desktop", "mobile"):
+            abort(400, "Pays ou appareil invalide")
+        raw = data.get("keywords") or []
+        raw = raw.splitlines() if isinstance(raw, str) else raw
+        keywords = list(dict.fromkeys(" ".join(str(k).lower().split())[:80] for k in raw if str(k).strip()))[:200]
+        if not keywords:
+            abort(400, "Aucun mot-clé")
+        room = g.limits["tracked_keywords"] - db.rank_count(user_id())
+        if len(keywords) > room:
+            raise QuotaError(f"Votre offre {g.limits['label']} permet de suivre {g.limits['tracked_keywords']} mots-clés "
+                             f"({max(room, 0)} restant(s)).")
+        volumes = {}
+        try:
+            volumes = _dfs().keyword_volumes(keywords, location)
+        except DataForSEOError as exc:
+            log.warning("Volumes des mots-clés suivis : %s", exc)
+        added = db.add_rank_keywords(user_id(), site, keywords, location, device, volumes)
+        stats = tracking.run(db, _dfs(), budget=8)  # lance tout de suite les relevés du jour
+        return jsonify(added=added, stats=stats), 201
+
+    @app.delete("/api/tracking/keywords/<keyword_id>")
+    @authed
+    def tracking_delete(keyword_id):
+        if not db.delete_rank_keyword(user_id(), keyword_id):
+            abort(404, "Mot-clé introuvable")
+        return jsonify(deleted=True)
+
+    @app.get("/api/tracking/keywords/<keyword_id>")
+    @authed
+    def tracking_keyword(keyword_id):
+        k = db.rank_keyword(user_id(), keyword_id)
+        if not k:
+            abort(404, "Mot-clé introuvable")
+        domains = [k["site"]] + db.rank_competitors(user_id(), k["site"])
+        checks = db.rank_keyword_checks(keyword_id)
+        series = {d: [[c["date"].isoformat(), (c["ranks"].get(d) or [None])[0]] for c in checks] for d in domains}
+        top = None
+        if checks:
+            serp = db.cache_get(tracking.serp_key(k["keyword"], k["location_code"], k["device"], checks[-1]["date"]), 40)
+            top = serp["top"] if serp else None
+        return jsonify(keyword=k["keyword"], site=k["site"], location=k["location_code"], device=k["device"],
+                       volume=k["volume"], series=series, top=top)
+
+    @app.post("/api/tracking/<site>/competitors")
+    @authed
+    def tracking_competitor_add(site):
+        site, domain = _domain(site), _domain(body().get("domain"))
+        if domain == site:
+            abort(400, "C'est votre propre site")
+        if len(db.rank_competitors(user_id(), site)) >= 10:
+            abort(400, "10 concurrents au maximum par site")
+        db.add_rank_competitor(user_id(), site, domain)
+        return jsonify(added=domain), 201
+
+    @app.delete("/api/tracking/<site>/competitors/<domain>")
+    @authed
+    def tracking_competitor_delete(site, domain):
+        db.delete_rank_competitor(user_id(), _domain(site), _domain(domain))
+        return jsonify(deleted=True)
+
     def _market(kind: str, seed: str, location: int) -> tuple[dict, bool]:
         """Données DataForSEO, servies depuis le cache partagé (30 jours) quand c'est possible."""
         key = f"{kind}|{location}|fr|{seed.lower()}"
         cached = db.cache_get(key)
         if cached is not None:
             return cached, True
-        client = DataForSEO(settings.dataforseo_login, settings.dataforseo_password)
-        data = getattr(client, kind)(seed, location)
+        data = getattr(_dfs(), kind)(seed, location)
         db.cache_put(key, data)
         return data, False
 

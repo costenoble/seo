@@ -213,7 +213,7 @@
         h("ul", {},
           h("li", {}, fmt(p.max_pages) + " pages par audit"), h("li", {}, fmt(p.audits_month) + " audits par mois"),
           h("li", {}, fmt(p.gsc_properties) + " propriété" + (p.gsc_properties > 1 ? "s" : "") + " Search Console suivie" + (p.gsc_properties > 1 ? "s" : "")),
-          h("li", {}, fmt(p.keywords_month) + " recherches de mots-clés par mois"), h("li", {}, fmt(p.competitors_month) + " analyses de concurrents par mois")),
+          h("li", {}, fmt(p.keywords_month) + " recherches de mots-clés par mois"), h("li", {}, fmt(p.tracked_keywords) + " mots-clés suivis chaque jour"), h("li", {}, fmt(p.competitors_month) + " analyses de concurrents par mois")),
         current === k ? h("span", { class: "btn btn-small", "aria-disabled": "true" }, "Votre offre actuelle")
           : current ? h("a", { class: "btn btn-small" + (featured ? " btn-green" : ""), href: "mailto:contact@vigieseo.fr?subject=" + encodeURIComponent("Passer à l'offre " + p.label) }, p.price ? "Passer à " + p.label : "Revenir au gratuit")
             : h("button", { class: "btn " + (featured ? "btn-green" : "btn-dark"), type: "button", onclick: signIn }, p.price ? "Essayer gratuitement" : "Commencer"));
@@ -815,6 +815,166 @@
       h("p", { class: "note", style: "margin-top:20px" }, "Progression : " + pct + " %. Les problèmes d'audit corrigés se ferment tout seuls au prochain audit ; pour les tâches Search Console, l'effet est mesuré sur les requêtes concernées, 4 semaines avant et après."));
   }
 
+  /* ---------- vue : suivi de positions ---------- */
+  var SERIES_COLORS = ["#0b0b0b", "#ff6235", "#2bb673", "#6fb1dc", "#b06ad9", "#f2a93b", "#cf3434", "#7a6f6a"];
+  // Plusieurs courbes de positions (1 en haut) ; les absences du top coupent la ligne.
+  function multiChart(series, o) {
+    o = o || {};
+    var W = 760, H = o.height || 260, P = { l: 36, r: 16, t: 14, b: 28 };
+    var all = []; series.forEach(function (sr) { sr.points.forEach(function (p) { if (p.y != null) all.push(p); }); });
+    if (!all.length) return h("p", { class: "muted" }, "Pas encore de position relevée dans le top suivi.");
+    var xs = []; series.forEach(function (sr) { sr.points.forEach(function (p) { xs.push(+p.x); }); });
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), hi = Math.max(10, Math.max.apply(null, all.map(function (p) { return p.y; })));
+    var X = function (v) { return P.l + (x1 === x0 ? (W - P.l - P.r) / 2 : (v - x0) / (x1 - x0) * (W - P.l - P.r)); };
+    var Y = function (v) { return P.t + (v - 1) / (hi - 1) * (H - P.t - P.b); };
+    var s = svg("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": o.label || "Évolution des positions" });
+    [1, Math.round(hi / 3), Math.round(2 * hi / 3), hi].forEach(function (v) {
+      s.append(svg("line", { class: "grid-line", x1: P.l, x2: W - P.r, y1: Y(v), y2: Y(v) }), svg("text", { x: P.l - 8, y: Y(v) + 4, "text-anchor": "end" }, v));
+    });
+    series.forEach(function (sr, i) {
+      var color = SERIES_COLORS[i % SERIES_COLORS.length], d = "", pen = false;
+      sr.points.forEach(function (p) {
+        if (p.y == null) { pen = false; return; }
+        d += (pen ? "L" : "M") + X(+p.x).toFixed(1) + " " + Y(p.y).toFixed(1) + " "; pen = true;
+      });
+      if (d) s.append(svg("path", { d: d, fill: "none", stroke: color, "stroke-width": i ? 2.5 : 3.5, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      sr.points.forEach(function (p) { if (p.y != null) s.append(svg("circle", { cx: X(+p.x), cy: Y(p.y), r: i ? 3 : 4, fill: color }, svg("title", {}, sr.name + " : " + p.y + "e le " + fdate(p.x, true)))); });
+    });
+    s.append(svg("text", { x: X(x0), y: H - 6 }, fdate(x0)));
+    if (x1 !== x0) s.append(svg("text", { x: X(x1), y: H - 6, "text-anchor": "end" }, fdate(x1)));
+    return h("div", {}, s, h("div", { class: "legend-row" }, series.map(function (sr, i) {
+      var dot = h("span", { class: "dot" }); dot.style.background = SERIES_COLORS[i % SERIES_COLORS.length];
+      return h("span", {}, dot, sr.name);
+    })));
+  }
+  function posChange(now, before) {
+    if (now == null && before == null) return h("span", { class: "muted" }, "–");
+    if (before == null) return now != null ? h("span", { class: "delta up" }, "nouveau") : h("span", { class: "muted" }, "–");
+    if (now == null) return h("span", { class: "delta down" }, "sorti");
+    return delta(before - now) || h("span", { class: "muted" }, "=");
+  }
+  function posCell(p) { return p == null ? h("span", { class: "muted" }, "> 30") : h("b", {}, p); }
+
+  function viewTracking(site) {
+    loading();
+    api("/api/tracking").then(function (cfg) {
+      if (!site) {
+        var domains = Object.keys(cfg.sites).concat(cfg.projects.filter(function (p) { return !(p in cfg.sites); }));
+        if (Object.keys(cfg.sites).length === 1) { location.hash = "#/suivi/" + encodeURIComponent(Object.keys(cfg.sites)[0]); return; }
+        var other = h("input", { type: "text", id: "tr-domain", placeholder: "exemple.fr", required: true });
+        fill(main, h("section", { class: "hero" }, h("p", { class: "eyebrow" }, "Suivi de positions"), h("h1", {}, "Votre place sur Google, chaque jour."),
+          h("p", {}, "Choisissez vos mots-clés : Vigie SEO relève chaque jour votre position et celle de vos concurrents, même sur des recherches où vous n'apparaissez pas encore.")),
+          !cfg.enabled ? h("div", { class: "card" }, h("p", {}, "Le suivi de positions nécessite le service de données (DataForSEO), qui n'est pas configuré.")) : null,
+          domains.length ? h("div", { class: "grid" }, domains.map(function (d, i) {
+            return h("a", { class: "card " + TINTS[i % 6], href: "#/suivi/" + encodeURIComponent(d) }, h("h3", {}, d),
+              h("p", { class: "muted" }, cfg.sites[d] ? cfg.sites[d] + " mot" + (cfg.sites[d] > 1 ? "s" : "") + "-clé" + (cfg.sites[d] > 1 ? "s" : "") + " suivi" + (cfg.sites[d] > 1 ? "s" : "") : "Commencer le suivi →"));
+          })) : null,
+          h("form", { class: "card form-row", style: "margin-top:20px", onsubmit: function (e) { e.preventDefault(); location.hash = "#/suivi/" + encodeURIComponent(other.value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "")); } },
+            h("div", { class: "field" }, h("label", { for: "tr-domain" }, "Suivre un domaine"), other), h("button", { class: "btn btn-dark", type: "submit" }, "Ouvrir")));
+        return;
+      }
+      return api("/api/tracking/" + encodeURIComponent(site)).then(function (d) { renderTracking(d, cfg); });
+    }).catch(fail);
+  }
+
+  function renderTracking(d, cfg) {
+    var site = d.site, k = d.kpis, comps = d.competitors.slice(1).map(function (c) { return c.domain; });
+    var err = h("div");
+    var kwIn = h("textarea", { id: "tr-kw", rows: 4, placeholder: "Un mot-clé par ligne\nlogiciel de facturation\nlogiciel facture charpentier", style: "width:100%;border:2px solid var(--ink);border-radius:var(--r-md);padding:14px 18px;font:1rem var(--body)" });
+    var loc = h("select", { id: "tr-loc", "aria-label": "Pays" }, Object.keys(cfg.locations).map(function (c) { return h("option", { value: c }, cfg.locations[c]); }));
+    var dev = h("select", { id: "tr-dev", "aria-label": "Appareil" }, h("option", { value: "desktop" }, "Ordinateur"), h("option", { value: "mobile" }, "Mobile"));
+    var addBtn = h("button", { class: "btn btn-dark", type: "submit" }, "Suivre");
+    var addForm = h("form", { class: "card", style: "display:grid;gap:14px", onsubmit: function (e) {
+      e.preventDefault(); addBtn.disabled = true; fill(err);
+      api("/api/tracking/" + encodeURIComponent(site) + "/keywords", { keywords: kwIn.value, location: +loc.value, device: dev.value })
+        .then(function () { viewTracking(site); }).catch(function (x) { addBtn.disabled = false; fill(err, errorBox(x)); });
+    } }, h("h3", {}, "Ajouter des mots-clés"), h("div", { class: "field" }, h("label", { for: "tr-kw" }, "Mots-clés"), kwIn),
+      h("div", { class: "form-row" }, h("div", { class: "field", style: "flex:0 0 170px" }, h("label", { for: "tr-loc" }, "Pays"), loc),
+        h("div", { class: "field", style: "flex:0 0 170px" }, h("label", { for: "tr-dev" }, "Appareil"), dev), addBtn),
+      h("p", { class: "note" }, d.used + " / " + d.limit + " mots-clés suivis avec votre offre. Premier relevé sous une heure, puis chaque jour."), err);
+
+    var compIn = h("input", { type: "text", placeholder: "concurrent.fr", "aria-label": "Ajouter un concurrent" }), compErr = h("div");
+    function addComp(domain) {
+      api("/api/tracking/" + encodeURIComponent(site) + "/competitors", { domain: domain }).then(function () { viewTracking(site); }).catch(function (x) { fill(compErr, errorBox(x)); });
+    }
+    var compTable = h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "Domaine"), h("th", { class: "num" }, "Visibilité"), h("th", { class: "num" }, "7 jours"), h("th", { class: "num" }, "Pos. moyenne"), h("th", { class: "num" }, "Top 10"), h("th", {}, ""))),
+      h("tbody", {}, d.competitors.map(function (c) {
+        var dv = c.visibility != null && c.visibility_week != null ? +(c.visibility - c.visibility_week).toFixed(1) : null;
+        return h("tr", { class: c.you ? "me" : "" }, h("td", {}, h("b", {}, c.domain), c.you ? " (vous)" : ""),
+          h("td", { class: "num" }, c.visibility != null ? fmt(c.visibility, 1) + " %" : "–"), h("td", { class: "num" }, dv != null ? delta(dv) || "=" : "–"),
+          h("td", { class: "num" }, fmt(c.avg_position, 1)), h("td", { class: "num" }, c.top10),
+          h("td", {}, c.you ? null : h("button", { class: "btn btn-small", type: "button", "aria-label": "Retirer " + c.domain, onclick: function () {
+            api("/api/tracking/" + encodeURIComponent(site) + "/competitors/" + encodeURIComponent(c.domain), undefined, "DELETE").then(function () { viewTracking(site); });
+          } }, "Retirer")));
+      }))));
+
+    var st = { sort: "volume", dir: -1, q: "" }, tbody = h("tbody"), thead = h("thead");
+    function th(label, key, num) {
+      return h("th", { class: num ? "num" : "" }, key ? h("button", { type: "button", class: "th-sort", onclick: function () { st.dir = st.sort === key ? -st.dir : (key === "position" ? 1 : -1); st.sort = key; draw(); } },
+        label + (st.sort === key ? (st.dir > 0 ? " ↑" : " ↓") : "")) : label);
+    }
+    function draw() {
+      fill(thead, h("tr", {}, th("Mot-clé", "keyword"), th("Position", "position", 1), th("1 j", null, 1), th("7 j", null, 1), th("30 jours"), th("Volume", "volume", 1),
+        comps.slice(0, 3).map(function (c) { return th(c, null, 1); }), th("Page", null), th("")));
+      var rows = d.keywords.filter(function (r) { return !st.q || r.keyword.indexOf(st.q.toLowerCase()) !== -1; }).sort(function (a, b) {
+        var va = a[st.sort], vb = b[st.sort];
+        if (st.sort === "keyword") return va.localeCompare(vb) * st.dir;
+        if (va == null) return 1; if (vb == null) return -1; return (va - vb) * st.dir;
+      });
+      fill(tbody, rows.map(function (r) {
+        var hist = r.history.map(function (x) { return x[1] == null ? 31 : x[1]; });
+        return h("tr", { class: "click", tabindex: 0, onclick: function (e) { if (e.target.tagName !== "BUTTON" && e.target.tagName !== "A") keywordDetail(r); }, onkeydown: function (e) { if (e.key === "Enter") keywordDetail(r); } },
+          h("td", {}, r.keyword, h("span", { class: "detail" }, (cfg.locations[r.location] || r.location) + " · " + (r.device === "mobile" ? "mobile" : "ordinateur"))),
+          h("td", { class: "num" }, r.pending ? h("span", { class: "muted" }, "en attente") : posCell(r.position)),
+          h("td", { class: "num" }, r.pending ? "" : posChange(r.position, r.prev_day)), h("td", { class: "num" }, r.pending ? "" : posChange(r.position, r.prev_week)),
+          h("td", {}, hist.length > 1 ? spark(hist.map(function (p) { return -p; })) : null),
+          h("td", { class: "num" }, fmt(r.volume)),
+          comps.slice(0, 3).map(function (c) { return h("td", { class: "num" }, r.pending ? "" : posCell(r.competitors[c])); }),
+          h("td", { class: "url" }, r.url ? h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.url.replace(/^https?:\/\/[^/]+/, "") || "/") : ""),
+          h("td", {}, h("button", { class: "btn btn-small", type: "button", "aria-label": "Ne plus suivre " + r.keyword, onclick: function () {
+            if (confirm("Ne plus suivre « " + r.keyword + " » ?")) api("/api/tracking/keywords/" + r.id, undefined, "DELETE").then(function () { viewTracking(site); });
+          } }, "Retirer")));
+      }));
+      if (!rows.length) tbody.append(h("tr", {}, h("td", { colspan: 12, class: "muted" }, "Aucun mot-clé suivi pour l'instant.")));
+    }
+    draw();
+
+    function keywordDetail(r) {
+      modal("Historique", [h("p", { class: "eyebrow" }, "Mot-clé suivi"), h("h2", {}, r.keyword), h("span", { class: "spinner" })]);
+      api("/api/tracking/keywords/" + r.id).then(function (k) {
+        var series = Object.keys(k.series).map(function (dom) {
+          return { name: dom === k.site ? dom + " (vous)" : dom, points: k.series[dom].map(function (p) { return { x: new Date(p[0]), y: p[1] }; }) };
+        });
+        overlay.querySelector(".modal").style.width = "min(860px, 100%)";
+        fill(overlay.querySelector(".modal"), h("p", { class: "eyebrow" }, "Mot-clé suivi · " + (cfg.locations[k.location] || "") + " · " + (k.device === "mobile" ? "mobile" : "ordinateur") + (k.volume ? " · " + fmt(k.volume) + " recherches/mois" : "")),
+          h("h2", {}, k.keyword), multiChart(series, { label: "Positions sur " + k.keyword }),
+          k.top ? h("div", {}, h("h3", { style: "margin:8px 0 10px" }, "Top 10 au dernier relevé"), h("ol", { class: "top10" }, k.top.map(function (t) {
+            return h("li", { class: t[1] === k.site ? "me" : "" }, h("b", {}, t[1]), h("a", { class: "detail url", href: t[2], target: "_blank", rel: "noopener noreferrer" }, t[3] || t[2]));
+          }))) : null,
+          h("div", { class: "form-row" }, h("button", { class: "btn", type: "button", onclick: closeOverlay }, "Fermer")));
+      }).catch(function (e) { fill(overlay.querySelector(".modal"), errorBox(e)); });
+    }
+
+    var vDelta = k.visibility != null && k.visibility_week != null ? +(k.visibility - k.visibility_week).toFixed(1) : null;
+    fill(main, h("a", { class: "crumb", href: "#/suivi" }, "← Suivi de positions"),
+      h("div", { class: "page-head", style: "margin-top:16px" }, h("div", { class: "grow" }, h("p", { class: "eyebrow" }, "Suivi de positions"),
+        h("h1", { style: "font-size:clamp(2rem,4vw,3rem)" }, site),
+        h("p", { class: "muted" }, d.keywords.length + " mot" + (d.keywords.length > 1 ? "s" : "") + "-clé" + (d.keywords.length > 1 ? "s" : "") + " suivi" + (d.keywords.length > 1 ? "s" : "") + (k.pending ? " · " + k.pending + " en attente du premier relevé" : "")))),
+      d.keywords.length ? h("div", { class: "kpis" },
+        kpi(k.visibility != null ? fmt(k.visibility, 1) + " %" : "–", "visibilité" + (vDelta != null ? " (" + (vDelta > 0 ? "+" : "") + fmt(vDelta, 1) + " sur 7 jours)" : ""), "blue"),
+        kpi(fmt(k.avg_position, 1), "position moyenne"), kpi(k.top3 + " / " + k.top10, "dans le top 3 / top 10", "pink"), kpi(k.out, "absents du top 30")) : null,
+      d.keywords.length ? h("section", { class: "section" }, h("header", {}, h("h2", {}, "Mots-clés"),
+        h("input", { type: "search", placeholder: "Filtrer", "aria-label": "Filtrer les mots-clés", oninput: function (e) { st.q = e.target.value; draw(); } })),
+        h("div", { class: "table-wrap" }, h("table", {}, thead, tbody))) : null,
+      h("section", { class: "section" }, h("h2", { style: "margin-bottom:16px" }, "Concurrents"), compTable,
+        h("form", { class: "form-row", style: "margin-top:14px", onsubmit: function (e) { e.preventDefault(); addComp(compIn.value); } },
+          h("div", { class: "field" }, compIn), h("button", { class: "btn btn-small", type: "submit" }, "Ajouter un concurrent")),
+        d.suggested.length ? h("div", { style: "margin-top:12px" }, h("p", { class: "note", style: "margin-bottom:8px" }, "Souvent dans le top 10 de vos mots-clés :"),
+          h("div", { class: "chips" }, d.suggested.map(function (s) { return h("button", { class: "chip", type: "button", onclick: function () { addComp(s); } }, "+ " + s); }))) : null, compErr),
+      h("section", { class: "section" }, addForm));
+  }
+
   /* ---------- vue : compte ---------- */
   function viewAccount() {
     loading();
@@ -874,13 +1034,14 @@
     window.scrollTo(0, 0);
     if (!SESSION) { viewLanding(name === "offres"); main.focus({ preventScroll: true }); return; }
     document.querySelectorAll("#nav a").forEach(function (a) {
-      var active = a.dataset.route === ({ site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors" }[name] || name);
+      var active = a.dataset.route === ({ site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking" }[name] || name);
       if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     if (name === "site" && parts[1]) viewSite(parts[1]);
     else if (name === "audit" && parts[1]) viewAudit(parts[1]);
     else if (name === "plan") viewPlan(parts[1]);
     else if (name === "positions") viewPositions(qs.get("google"));
+    else if (name === "suivi") viewTracking(parts[1]);
     else if (name === "mots-cles") viewKeywords();
     else if (name === "concurrents") viewCompetitors(parts[1]);
     else if (name === "compte" || name === "offres") viewAccount();

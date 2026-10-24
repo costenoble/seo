@@ -317,6 +317,90 @@ def test_dataforseo_errors_are_readable(monkeypatch):
         status_code, content = 200, b"x"
         def __init__(self, data): self._d = data
         def json(self): return self._d
-    monkeypatch.setattr(dataforseo.httpx, "post", lambda *a, **k: R({"status_code": 40200, "status_message": "Payment Required"}))
+    monkeypatch.setattr(dataforseo.httpx, "request", lambda *a, **k: R({"status_code": 40200, "status_message": "Payment Required"}))
     with pytest.raises(dataforseo.DataForSEOError, match="Crédit"):
         dataforseo.DataForSEO("l", "p").keyword_suggestions("x", 2250)
+
+
+class FakeSerp:
+    """Faux DataForSEO pour le suivi : tâches différées, prêtes au passage suivant."""
+    def __init__(self):
+        self.posted, self.ready, self.n = [], [], 0
+
+    def keyword_volumes(self, keywords, location):
+        return {k: 100 * (i + 1) for i, k in enumerate(keywords)}
+
+    def post_serp_tasks(self, jobs, depth=30):
+        ids = []
+        for j in jobs:
+            self.n += 1
+            ids.append(f"t{self.n}")
+            self.posted.append((f"t{self.n}", j["keyword"]))
+        return ids
+
+    def release(self):  # les relevés envoyés deviennent disponibles
+        self.ready = [t for t, _ in self.posted]
+
+    def serp_ready(self):
+        return list(self.ready)
+
+    def serp_result(self, task_id):
+        self.ready.remove(task_id)
+        kw = dict(self.posted)[task_id]
+        mine = 4 if "facturation" in kw else None
+        ranks = {"concurrent.fr": [1, "https://concurrent.fr/"], "autre.fr": [2, "https://autre.fr/"],
+                 "wiki.fr": [3, "https://wiki.fr/x"]}
+        if mine:
+            ranks["exemple.fr"] = [mine, "https://www.exemple.fr/logiciel"]
+        return {"ranks": ranks, "top": [[p, d, u, d] for d, (p, u) in sorted(ranks.items(), key=lambda x: x[1][0])]}
+
+
+def test_rank_tracking(pg_dsn, monkeypatch):
+    from seo_audit.cloud import tracking
+    fake = FakeSerp()
+    app_ = cloud_app.create_app(settings(pg_dsn, dataforseo_login="l", dataforseo_password="p"))
+    monkeypatch.setattr(cloud_app, "DataForSEO", lambda *a, **k: fake)
+    client = app_.test_client()
+    uid, h = new_user(pg_dsn, plan="pro")
+    _, h2 = new_user(pg_dsn, plan="pro")
+    with psycopg.connect(pg_dsn) as c:  # repartir d'un moteur vide
+        c.execute("delete from serp_tasks"); c.execute("delete from data_cache where key like 'serp|%'")
+
+    r = client.post("/api/tracking/www.exemple.fr/keywords", json={"keywords": "Logiciel de facturation\nfacture charpentier\n\n", "location": 2250}, headers=h)
+    assert r.status_code == 201 and r.get_json()["added"] == 2 and r.get_json()["stats"]["posted"] == 2
+    # un 2e utilisateur suit le même mot-clé : aucun nouveau relevé payé
+    r2 = client.post("/api/tracking/autre-site.fr/keywords", json={"keywords": ["logiciel de facturation"]}, headers=h2)
+    assert r2.get_json()["stats"]["posted"] == 0 and len(fake.posted) == 2
+
+    pending = client.get("/api/tracking/exemple.fr", headers=h).get_json()
+    assert pending["kpis"]["pending"] == 2 and pending["keywords"][0]["volume"] is not None
+
+    db = cloud_app.Db(pg_dsn)
+    fake.release()
+    stats = tracking.run(db, fake, budget=20)
+    assert stats["collected"] == 2
+    d = client.get("/api/tracking/exemple.fr", headers=h).get_json()
+    rows = {r["keyword"]: r for r in d["keywords"]}
+    assert rows["logiciel de facturation"]["position"] == 4 and rows["facture charpentier"]["position"] is None
+    assert rows["logiciel de facturation"]["url"] == "https://www.exemple.fr/logiciel"
+    assert d["kpis"]["top10"] == 1 and d["kpis"]["out"] == 1 and d["kpis"]["visibility"] == round(.07 / (2 * .28) * 100, 1)
+    assert set(d["suggested"]) >= {"concurrent.fr", "autre.fr"}
+    # le relevé partagé a aussi servi au 2e utilisateur
+    other = client.get("/api/tracking/autre-site.fr", headers=h2).get_json()
+    assert other["kpis"]["pending"] == 0 and other["keywords"][0]["position"] is None
+
+    assert client.post("/api/tracking/exemple.fr/competitors", json={"domain": "https://www.concurrent.fr/page"}, headers=h).status_code == 201
+    d = client.get("/api/tracking/exemple.fr", headers=h).get_json()
+    comp = {c["domain"]: c for c in d["competitors"]}
+    assert comp["concurrent.fr"]["top10"] == 2 and comp["exemple.fr"]["you"]
+    detail = client.get(f"/api/tracking/keywords/{rows['logiciel de facturation']['id']}", headers=h).get_json()
+    assert detail["series"]["exemple.fr"][0][1] == 4 and detail["series"]["concurrent.fr"][0][1] == 1 and detail["top"][0][1] == "concurrent.fr"
+
+    # isolation, quota et suppression
+    assert client.get(f"/api/tracking/keywords/{rows['logiciel de facturation']['id']}", headers=h2).status_code == 404
+    assert client.delete(f"/api/tracking/keywords/{rows['logiciel de facturation']['id']}", headers=h2).status_code == 404
+    _, free = new_user(pg_dsn)
+    many = "\n".join(f"mot {i}" for i in range(11))
+    assert client.post("/api/tracking/exemple.fr/keywords", json={"keywords": many}, headers=free).status_code == 402
+    assert client.post("/api/tracking/pas un domaine/keywords", json={"keywords": "x"}, headers=h).status_code == 400
+    assert client.delete(f"/api/tracking/keywords/{rows['facture charpentier']['id']}", headers=h).status_code == 200

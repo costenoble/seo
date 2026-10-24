@@ -214,3 +214,10 @@ input[type="search"] { min-width: 240px; }
 .intent { font: 600 .78rem var(--head); padding: 3px 10px; border-radius: 99px; background: var(--cream); white-space: nowrap; }
 .intent-commercial { background: var(--blue); } .intent-transactionnel { background: #c9f0dc; } .intent-info { background: #f1e8ff; } .intent-navigation { background: var(--pink); }
 .table-wrap td svg { width: 90px; height: 24px; display: block; }
+
+/* suivi de positions */
+tr.me td { background: #f1fbf5; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 14px; font-size: .85rem; margin-top: 8px; }
+.top10 { margin: 0; padding-left: 24px; display: grid; gap: 8px; font-size: .92rem; }
+.top10 li.me { background: #d9f4e6; border-radius: 8px; padding: 4px 8px; }
+.delta { white-space: nowrap; }

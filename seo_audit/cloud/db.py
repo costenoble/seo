@@ -314,6 +314,119 @@ class Db:
         return {"days": days, "clicks": r["clicks"], "impressions": r["impressions"],
                 "position": round(r["position"], 1) if r["position"] is not None else None}
 
+    # -- suivi de positions -------------------------------------------------------------------------
+    def rank_keywords(self, user_id: str, site: str) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT id, keyword, location_code, device, volume, last_checked, created_at
+                                FROM rank_keywords WHERE user_id=%s AND site=%s ORDER BY volume DESC NULLS LAST, keyword""",
+                             (user_id, site)).fetchall()
+
+    def rank_sites(self, user_id: str) -> dict:
+        with self.conn() as c:
+            return {r["site"]: r["n"] for r in c.execute(
+                "SELECT site, count(*) n FROM rank_keywords WHERE user_id=%s GROUP BY site", (user_id,))}
+
+    def rank_count(self, user_id: str) -> int:
+        with self.conn() as c:
+            return c.execute("SELECT count(*) n FROM rank_keywords WHERE user_id=%s", (user_id,)).fetchone()["n"]
+
+    def add_rank_keywords(self, user_id: str, site: str, keywords: list[str], location: int, device: str,
+                          volumes: dict) -> int:
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.executemany("""INSERT INTO rank_keywords (user_id, site, keyword, location_code, device, volume)
+                               VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                            [(user_id, site, k, location, device, volumes.get(k)) for k in keywords])
+            return cur.rowcount
+
+    def delete_rank_keyword(self, user_id: str, keyword_id: str) -> bool:
+        try:
+            with self.conn() as c:
+                return c.execute("DELETE FROM rank_keywords WHERE id=%s AND user_id=%s", (keyword_id, user_id)).rowcount == 1
+        except psycopg.errors.InvalidTextRepresentation:
+            return False
+
+    def rank_keyword(self, user_id: str, keyword_id: str) -> dict | None:
+        try:
+            with self.conn() as c:
+                return c.execute("SELECT * FROM rank_keywords WHERE id=%s AND user_id=%s", (keyword_id, user_id)).fetchone()
+        except psycopg.errors.InvalidTextRepresentation:
+            return None
+
+    def rank_history(self, user_id: str, site: str, days: int = 30) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT c.keyword_id, c.date, c.position FROM rank_checks c
+                                JOIN rank_keywords k ON k.id = c.keyword_id
+                                WHERE k.user_id=%s AND k.site=%s AND c.date > current_date - %s""",
+                             (user_id, site, days)).fetchall()
+
+    def rank_latest(self, user_id: str, site: str, before_days: int = 0) -> dict:
+        """{keyword_id: ranks} du relevé le plus récent (au moins `before_days` jours avant le dernier relevé)."""
+        with self.conn() as c:
+            rows = c.execute("""SELECT DISTINCT ON (c.keyword_id) c.keyword_id, c.ranks FROM rank_checks c
+                                JOIN rank_keywords k ON k.id = c.keyword_id
+                                WHERE k.user_id=%s AND k.site=%s
+                                  AND c.date <= (SELECT max(c2.date) FROM rank_checks c2 WHERE c2.keyword_id = c.keyword_id) - %s
+                                ORDER BY c.keyword_id, c.date DESC""", (user_id, site, before_days)).fetchall()
+        return {str(r["keyword_id"]): r["ranks"] for r in rows}
+
+    def rank_keyword_checks(self, keyword_id: str) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("SELECT date, position, url, ranks FROM rank_checks WHERE keyword_id=%s ORDER BY date",
+                             (keyword_id,)).fetchall()
+
+    def rank_competitors(self, user_id: str, site: str) -> list[str]:
+        with self.conn() as c:
+            return [r["domain"] for r in c.execute(
+                "SELECT domain FROM rank_competitors WHERE user_id=%s AND site=%s ORDER BY created_at", (user_id, site))]
+
+    def add_rank_competitor(self, user_id: str, site: str, domain: str) -> None:
+        with self.conn() as c:
+            c.execute("INSERT INTO rank_competitors (user_id, site, domain) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                      (user_id, site, domain))
+
+    def delete_rank_competitor(self, user_id: str, site: str, domain: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM rank_competitors WHERE user_id=%s AND site=%s AND domain=%s", (user_id, site, domain))
+
+    # moteur (tous utilisateurs confondus)
+    def rank_due_groups(self, day, limit: int = 100) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT k.keyword, k.location_code, k.device FROM rank_keywords k
+                                WHERE (k.last_checked IS NULL OR k.last_checked < %s)
+                                  AND NOT EXISTS (SELECT 1 FROM serp_tasks t WHERE t.keyword = k.keyword
+                                       AND t.location_code = k.location_code AND t.device = k.device AND t.date = %s)
+                                GROUP BY 1, 2, 3 LIMIT %s""", (day, day, limit)).fetchall()
+
+    def rank_due_rows(self, keyword: str, location: int, device: str, day) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT id, site FROM rank_keywords WHERE keyword=%s AND location_code=%s AND device=%s
+                                AND (last_checked IS NULL OR last_checked < %s)""", (keyword, location, device, day)).fetchall()
+
+    def save_rank_check(self, keyword_id, day, position, url, ranks) -> None:
+        with self.conn() as c:
+            c.execute("""INSERT INTO rank_checks (keyword_id, date, position, url, ranks) VALUES (%s,%s,%s,%s,%s)
+                         ON CONFLICT (keyword_id, date) DO UPDATE SET position=EXCLUDED.position, url=EXCLUDED.url,
+                         ranks=EXCLUDED.ranks""", (keyword_id, day, position, url, Jsonb(ranks)))
+            c.execute("UPDATE rank_keywords SET last_checked=%s WHERE id=%s", (day, keyword_id))
+
+    def serp_tasks_pending(self) -> dict:
+        with self.conn() as c:
+            return {r["task_id"]: r for r in c.execute("SELECT * FROM serp_tasks")}
+
+    def add_serp_task(self, task_id, keyword, location, device, day) -> None:
+        with self.conn() as c:
+            c.execute("""INSERT INTO serp_tasks (task_id, keyword, location_code, device, date) VALUES (%s,%s,%s,%s,%s)
+                         ON CONFLICT DO NOTHING""", (task_id, keyword, location, device, day))
+
+    def delete_serp_task(self, task_id) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM serp_tasks WHERE task_id=%s", (task_id,))
+
+    def purge_stale_serp_tasks(self, hours: int) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM serp_tasks WHERE created_at < now() - make_interval(hours => %s)", (hours,))
+
     # -- cache des données payantes ----------------------------------------------------------
     def cache_get(self, key: str, max_age_days: int = 30):
         with self.conn() as c:
