@@ -6,7 +6,7 @@ Crawle un site, applique une quarantaine de contrôles SEO techniques et produit
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 Options facultatives :
@@ -34,20 +34,21 @@ Le rapport est écrit dans `rapports/<site>-<date>/` : `rapport.html`, `probleme
 
 Pour l'intégration continue, `--fail-on high` renvoie le code de sortie 1 dès qu'un problème de gravité élevée ou critique est trouvé.
 
-## Tableau de bord web
+## Vigie SEO, la version en ligne
 
-```bash
-python -m seo_audit serve            # http://127.0.0.1:8765
-```
+Le même moteur d'audit existe en application web multi-utilisateurs (Vercel + Supabase), avec connexion Google :
 
-Un tableau de bord local (aucun service externe, rien ne quitte la machine) qui lit les audits de `rapports/` :
+- **Projets** : score par site, historique, problèmes groupés par type, comparaison avec l'audit précédent, export CSV et HTML.
+- **Positions** : requêtes Search Console de chaque utilisateur (lecture seule), importées puis mises à jour chaque jour.
+- **Mots-clés** : idées issues de l'autocomplétion de Google et des requêtes réelles.
+- **Concurrents** : exploration légère et comparaison avec votre dernier audit.
+- **Offres** : quotas par plan (gratuit, pro, agence) dans `seo_audit/cloud/plans.py`.
 
-- **Projets** : un score par site, son évolution, l'historique des audits, les problèmes groupés par type, et le lancement d'un audit depuis le navigateur.
-- **Positions** : import quotidien des requêtes de la Search Console (clics, impressions, CTR, position) dans `data/seo.db`, avec courbe de chaque requête, requêtes en progression, en recul ou en page 2. Même compte de service que `--gsc-site` (`GOOGLE_APPLICATION_CREDENTIALS`). Relancez l'import régulièrement : Google ne conserve que 16 mois.
-- **Mots-clés** : idées issues de l'autocomplétion de Google (suggestions, questions, variantes) et de vos requêtes réelles. Pas de volume de recherche : cette donnée n'existe pas gratuitement.
-- **Concurrents** : exploration légère (30 pages, robots.txt respecté) et comparaison des balises, du contenu, des données structurées et du temps de réponse avec votre dernier audit.
+Les audits avancent par étapes de 40 secondes (`seo_audit/engine/`), relancées chaque minute par Supabase : c'est ce qui
+permet d'explorer des milliers de pages avec des fonctions Vercel limitées dans le temps. Chaque page visitée passe par
+un garde-fou anti-SSRF (`seo_audit/ssrf.py`), et chaque utilisateur ne voit que ses données.
 
-Le serveur n'écoute que sur 127.0.0.1, refuse les hôtes non locaux et n'accepte les écritures qu'en JSON, pour qu'une page web tierce ne puisse pas lancer d'exploration à votre insu.
+Mise en ligne pas à pas : [DEPLOIEMENT.md](DEPLOIEMENT.md).
 
 ## Ce qui est contrôlé
 

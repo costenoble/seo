@@ -90,6 +90,8 @@ async def run(args) -> int:
             crawler.results[url].performance = data
 
     if args.gsc_site:
+        if not args.gsc_credentials:
+            raise SystemExit("--gsc-site demande --gsc-credentials ou GOOGLE_APPLICATION_CREDENTIALS")
         from .gsc import inspect_urls
         targets = priority_pages(crawler, args.gsc_max)
         log.info("Inspection Search Console de %d URLs", len(targets))
@@ -128,13 +130,17 @@ def main(argv=None) -> int:
     import sys
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "serve":
-        sp = argparse.ArgumentParser(prog="seo_audit serve", description="Tableau de bord web local.")
-        sp.add_argument("--port", type=int, default=8765)
-        sp.add_argument("--root", type=Path, default=Path("."), help="dossier contenant rapports/ et data/")
+        # Développement local de la version hébergée : mêmes variables d'environnement que sur Vercel.
+        sp = argparse.ArgumentParser(prog="seo_audit serve", description="API et site en local (développement).")
+        sp.add_argument("--port", type=int, default=3000)
         sargs = sp.parse_args(argv[1:])
-        os.chdir(sargs.root)
-        from .web.app import serve
-        serve(port=sargs.port)
+        os.environ.setdefault("SERVE_STATIC", "1")
+        from .cloud.app import create_app
+        from .cloud.config import Settings
+        missing = Settings.from_env().missing()
+        if missing:
+            raise SystemExit("Variables manquantes : " + ", ".join(missing) + " (voir .env.example)")
+        create_app().run(host="127.0.0.1", port=sargs.port, threaded=True)
         return 0
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,

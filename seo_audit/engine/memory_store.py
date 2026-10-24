@@ -12,12 +12,15 @@ class MemoryStore:
         self.reports: dict[str, dict] = {}
         self._ids = itertools.count(1)
 
-    def create_audit(self, user_id: str, url: str, options: dict | None = None) -> str:
+    def create_audit(self, user_id: str, url: str, options: dict | None = None,
+                     kind: str = "site", parent_site: str | None = None) -> str:
         audit_id = f"a{next(self._ids)}"
         self.audits[audit_id] = {
             "id": audit_id, "user_id": user_id, "url": url, "site": site_key(url), "status": "queued",
             "phase": "init", "options": options or {}, "robots_text": None, "sitemap_urls": [],
-            "error": None, "created_at": time.time(), "started_at": None, "finished_at": None, "summary": None}
+            "error": None, "created_at": time.time(), "started_at": None, "finished_at": None, "summary": None,
+            "kind": kind, "parent_site": parent_site, "lease_until": 0, "lease_owner": None,
+            "pages_done": 0, "pages_total": 0}
         self.pages[audit_id] = {}
         return audit_id
 
@@ -26,6 +29,18 @@ class MemoryStore:
 
     def update_audit(self, audit_id, **fields):
         self.audits[audit_id].update(fields)
+
+    def acquire(self, audit_id, owner, seconds):
+        a = self.audits[audit_id]
+        if a["lease_until"] > time.time():
+            return False
+        a.update(lease_until=time.time() + seconds, lease_owner=owner)
+        return True
+
+    def release(self, audit_id, owner):
+        a = self.audits[audit_id]
+        if a["lease_owner"] == owner:
+            a.update(lease_until=0, lease_owner=None)
 
     def active_audits(self):
         return [a["id"] for a in sorted(self.audits.values(), key=lambda a: a["created_at"])
@@ -67,7 +82,7 @@ class MemoryStore:
 
     def previous_report(self, user_id, site, exclude_id):
         done = [a for a in self.audits.values() if a["user_id"] == user_id and a["site"] == site
-                and a["status"] == "done" and a["id"] != exclude_id]
+                and a["status"] == "done" and a["id"] != exclude_id and a["kind"] == "site"]
         if not done:
             return None
         return self.reports[max(done, key=lambda a: a["finished_at"])["id"]]

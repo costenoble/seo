@@ -13,16 +13,7 @@ FIELDS = ("verdict", "coverageState", "indexingState", "robotsTxtState", "pageFe
           "lastCrawlTime", "googleCanonical", "userCanonical")
 
 
-def _session(credentials_file: str | None = None):
-    """Compte de service si un fichier est fourni, sinon la connexion Google (OAuth) de l'utilisateur."""
-    if not credentials_file:
-        from . import oauth
-        creds = oauth.credentials()
-        if creds is None:
-            raise SystemExit("Search Console non connectée : utilisez « Connecter Google » dans le tableau "
-                             "de bord ou fournissez un compte de service (GOOGLE_APPLICATION_CREDENTIALS)")
-        from google.auth.transport.requests import AuthorizedSession
-        return AuthorizedSession(creds)
+def _session(credentials_file: str):
     try:
         from google.auth.transport.requests import AuthorizedSession
         from google.oauth2 import service_account
@@ -46,7 +37,7 @@ async def _with_retry(call, attempts: int = 4):
             await asyncio.sleep(2 ** n * 2)
 
 
-async def inspect_urls(urls, *, site_url: str, credentials_file: str | None = None) -> dict[str, dict]:
+async def inspect_urls(urls, *, site_url: str, credentials_file: str) -> dict[str, dict]:
     """site_url : 'https://www.example.com/' ou 'sc-domain:example.com'."""
     session = await asyncio.to_thread(_session, credentials_file)
     out = {}

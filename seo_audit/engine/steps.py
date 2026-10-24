@@ -5,6 +5,7 @@ tant que l'audit n'est pas terminé (planificateur Supabase, ou navigateur ouver
 import asyncio
 import logging
 import time
+import uuid
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -41,6 +42,18 @@ async def step_audit(store, audit_id: str, *, budget: float = DEFAULT_BUDGET, ur
     audit = store.get_audit(audit_id)
     if audit["status"] in ("done", "failed", "cancelled"):
         return audit
+    # une seule instance à la fois par audit (planificateur et navigateur peuvent appeler en même temps)
+    owner = uuid.uuid4().hex
+    if not store.acquire(audit_id, owner, budget + 30):
+        return audit
+    try:
+        return await _step_locked(store, audit_id, deadline, url_guard)
+    finally:
+        store.release(audit_id, owner)
+
+
+async def _step_locked(store, audit_id, deadline, url_guard) -> dict:
+    audit = store.get_audit(audit_id)
     if audit["status"] == "queued":
         store.update_audit(audit_id, status="running", started_at=time.time())
         audit = store.get_audit(audit_id)
@@ -110,6 +123,8 @@ async def _crawl(store, audit, deadline, url_guard):
             pages = await asyncio.gather(*(one(c) for c in claimed))
             store.save_pages(audit["id"], [(p.url, p.to_dict()) for p in pages])
             store.add_pending(audit["id"], [item for p in pages for item in crawler.discover(p)], crawler.max_pages)
+            c = store.counts(audit["id"])
+            store.update_audit(audit["id"], pages_done=c["done"], pages_total=c["total"])
 
     if store.counts(audit["id"])["pending"] == 0:
         if audit["phase"] == "crawl" and audit["sitemap_urls"]:
@@ -136,7 +151,8 @@ def _finalize(store, audit):
     crawler = SimpleNamespace(results=results, inlinks=inlinks, external_sources=external,
                               sitemap_urls=sitemap, start_url=start, site=site_key(start))
     issues = run_checks(crawler, {})
-    previous = store.previous_report(audit["user_id"], audit["site"], audit["id"])
+    previous = None if audit.get("kind") == "competitor" else \
+        store.previous_report(audit["user_id"], audit["site"], audit["id"])
     meta = {"options": {k: str(v) for k, v in audit["options"].items()}}
     summary, issues, rows = build_report(crawler, issues, meta, previous)
     store.save_report(audit["id"], summary, [i.__dict__ for i in issues], rows)

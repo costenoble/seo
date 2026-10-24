@@ -1,9 +1,4 @@
 import asyncio
-import os
-import shutil
-import socket
-import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -15,15 +10,7 @@ from seo_audit.ssrf import check_public_url
 
 from .site_de_test import start_server
 
-MIGRATION = Path(__file__).parent.parent / "supabase" / "migrations" / "0001_audits.sql"
-AUTH_STUB = """
-create schema auth;
-create table auth.users (id uuid primary key);
-create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.uid', true), '')::uuid $$;
-create role authenticated; create role anon;
-grant usage on schema auth to authenticated;
-"""
-USER = "11111111-1111-1111-1111-111111111111"
+from .conftest import USER
 
 
 @pytest.fixture(scope="module")
@@ -31,6 +18,7 @@ def site():
     server, base = start_server()
     yield base
     server.shutdown()
+
 
 
 def issue_keys(issues, base):
@@ -96,24 +84,7 @@ def test_ssrf_guard_blocks_private_targets():
     assert any(i["code"] == "fetch_error" and "refusée" in i["detail"] for i in issues)
 
 
-# -- Postgres réel -------------------------------------------------------------
-@pytest.fixture(scope="module")
-def pg_dsn(tmp_path_factory):
-    if not (shutil.which("initdb") and shutil.which("pg_ctl")):
-        pytest.skip("PostgreSQL local absent")
-    root = tmp_path_factory.mktemp("pg")
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
-    subprocess.run(["initdb", "-D", str(root / "data"), "-U", "postgres", "-A", "trust"], check=True, capture_output=True)
-    subprocess.run(["pg_ctl", "-D", str(root / "data"), "-o", f"-p {port} -c unix_socket_directories= -c listen_addresses=127.0.0.1",
-                    "-l", str(root / "log"), "-w", "start"], check=True, capture_output=True)
-    dsn = f"postgresql://postgres@127.0.0.1:{port}/postgres"
-    subprocess.run(["psql", dsn, "-v", "ON_ERROR_STOP=1", "-q", "-c", AUTH_STUB, "-c", f"insert into auth.users values ('{USER}')",
-                    "-c", "insert into auth.users values ('22222222-2222-2222-2222-222222222222')", "-f", str(MIGRATION)],
-                   check=True, capture_output=True)
-    yield dsn
-    subprocess.run(["pg_ctl", "-D", str(root / "data"), "-m", "immediate", "stop"], capture_output=True)
-
-
+# -- Postgres réel (fixture pg_dsn dans conftest.py) -------------------------------
 def test_postgres_store_matches_memory(site, pg_dsn):
     from seo_audit.engine.pg_store import PgStore
     store = PgStore(pg_dsn)

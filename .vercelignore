@@ -1,0 +1,6 @@
+.venv
+rapports
+data
+.pytest_cache
+tests
+tools

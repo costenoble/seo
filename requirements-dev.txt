@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8
+# Ligne de commande : inspection Search Console par compte de service (--gsc-site)
+google-auth>=2.30
+requests>=2.31
+# Optionnel : rendu JavaScript (--render-js) et captures d'écran de test
+# playwright>=1.45        puis : playwright install chromium

@@ -1,33 +1,8 @@
-"""Analyse de concurrents : crawl léger de leurs pages publiques et profil comparable au nôtre."""
+"""Profil comparable d'un site (le nôtre ou un concurrent) à partir des lignes de pages d'un audit."""
 import json
 from collections import Counter
 from pathlib import Path
 from statistics import mean
-
-from .crawler import Crawler
-from .report import _schema_types
-
-
-async def profile_site(url: str, *, max_pages: int = 30) -> dict:
-    crawler = Crawler(url, max_pages=max_pages, max_depth=3, concurrency=2, delay=0.5,
-                      use_sitemap=True)
-    await crawler.run()
-    pages = [p for p in crawler.results.values() if p.is_html_ok]
-    if not pages:
-        raise SystemExit(f"Aucune page lisible sur {crawler.start_url} (site inaccessible ou bloqué par robots.txt)")
-    return {
-        "url": crawler.start_url, "sitemap_urls": len(crawler.sitemap_urls),
-        **summarize([_metrics(p) for p in pages]),
-    }
-
-
-def _metrics(p) -> dict:
-    d = p.parsed
-    return {"title_length": len(d.title), "description_length": len(d.description),
-            "h1_count": len([h for h in d.h1 if h]), "word_count": d.word_count,
-            "schema_types": ",".join(sorted(_schema_types(d))), "hreflang_count": len(d.hreflangs),
-            "indexable": p.indexable, "ttfb_ms": p.ttfb_ms, "has_canonical": bool(d.canonicals),
-            "has_viewport": d.has_viewport}
 
 
 def summarize(rows: list[dict]) -> dict:
