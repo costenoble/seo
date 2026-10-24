@@ -404,3 +404,40 @@ def test_rank_tracking(pg_dsn, monkeypatch):
     assert client.post("/api/tracking/exemple.fr/keywords", json={"keywords": many}, headers=free).status_code == 402
     assert client.post("/api/tracking/pas un domaine/keywords", json={"keywords": "x"}, headers=h).status_code == 400
     assert client.delete(f"/api/tracking/keywords/{rows['facture charpentier']['id']}", headers=h).status_code == 200
+
+
+def test_domain_analysis_and_gap(pg_dsn, monkeypatch):
+    calls = []
+
+    class FakeSER:
+        def __init__(self, key): pass
+        def overview(self, d, src): calls.append(("overview", d)); return {"keywords": 1200, "traffic": 3400, "value": 900, "new": 40, "lost": 12, "up": 30, "down": 8, "distribution": [10, 20, 30, 40, 50]}
+        def keywords(self, d, src): calls.append(("keywords", d)); return [{"keyword": "devis artisan", "position": 3, "prev": 5, "volume": 900, "cpc": 2.1, "difficulty": 30, "traffic": 120, "url": "https://x.fr/devis", "intent": "commercial", "features": [], "their_position": None}]
+        def competitors(self, d, src): calls.append(("competitors", d)); return [{"domain": "rival.fr", "common": 300, "missing": 150, "keywords": 450, "traffic": 2000}]
+        def backlinks(self, d): calls.append(("backlinks", d)); return {"backlinks": 500, "refdomains": 80, "dofollow_refdomains": 60, "authority": 35, "dofollow_pct": 75, "anchors": [["x", 10]], "pages": [["https://x.fr/", 40]]}
+        def gap(self, comp, mine, src): calls.append(("gap", comp, mine)); return [{"keyword": "logiciel devis", "volume": 1900, "difficulty": 25, "cpc": 5, "position": 4, "url": "https://rival.fr/", "intent": "commercial", "traffic": 0, "prev": None, "features": [], "their_position": None}]
+    monkeypatch.setattr(cloud_app, "SERanking", FakeSER)
+    client = cloud_app.create_app(settings(pg_dsn, seranking_api_key="k")).test_client()
+    uid, h = new_user(pg_dsn)
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("delete from data_cache where key like 'ser|%'")
+    d = client.get("/api/domain?domain=https://www.X.fr/page&location=2250", headers=h).get_json()
+    assert d["domain"] == "x.fr" and d["overview"]["traffic"] == 3400 and d["backlinks"]["authority"] == 35 and not d["cached"]
+    assert d["competitors"][0]["domain"] == "rival.fr" and d["keywords"][0]["keyword"] == "devis artisan"
+    # même domaine par un autre utilisateur : tout vient du cache, pas de quota consommé
+    _, h2 = new_user(pg_dsn)
+    d2 = client.get("/api/domain?domain=x.fr", headers=h2).get_json()
+    assert d2["cached"] and len(calls) == 4
+    assert client.get("/api/me", headers=h2).get_json()["usage"]["domain"] == 0
+    g = client.get("/api/domain/gap?competitor=rival.fr&mine=x.fr", headers=h).get_json()
+    assert g["keywords"][0]["keyword"] == "logiciel devis" and calls[-1] == ("gap", "rival.fr", "x.fr")
+    assert client.get("/api/me", headers=h).get_json()["usage"]["domain"] == 2
+    # quota gratuit : 5 analyses par mois
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into usage_events (user_id, kind) select %s, 'domain' from generate_series(1, 3)", (uid,))
+    assert client.get("/api/domain?domain=nouveau.fr", headers=h).status_code == 402
+    assert client.get("/api/domain?domain=x.fr&location=1", headers=h).status_code == 400
+    assert client.get("/api/domain?domain=pas un domaine", headers=h).status_code == 400
+    # sans clé configurée : message clair
+    off = cloud_app.create_app(settings(pg_dsn)).test_client()
+    assert off.get("/api/domain?domain=x.fr", headers=h).status_code == 503

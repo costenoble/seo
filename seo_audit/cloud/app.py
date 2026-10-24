@@ -21,6 +21,7 @@ from ..urls import is_http, normalize_url, site_key
 from . import crypto, google
 from .dataforseo import LOCATIONS, DataForSEO, DataForSEOError
 from .insights import analyze
+from .seranking import SOURCES, SERanking, SERankingError
 from . import tracking
 from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
@@ -167,7 +168,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     def me():
         usage = db.usage_month(user_id())
         return jsonify(email=g.user["email"], plan=g.profile["plan"], limits=g.limits,
-                       usage={k: usage.get(k, 0) for k in ("audit", "competitor", "keywords")},
+                       usage={k: usage.get(k, 0) for k in ("audit", "competitor", "keywords", "domain")},
                        running=db.running_count(user_id()), google=db.google_token(user_id()) is not None)
 
     @app.post("/api/me/delete")
@@ -550,6 +551,62 @@ def create_app(settings: Settings | None = None) -> Flask:
     def tracking_competitor_delete(site, domain):
         db.delete_rank_competitor(user_id(), _domain(site), _domain(domain))
         return jsonify(deleted=True)
+
+    # -- analyse de domaines (SE Ranking) ---------------------------------------------------------
+    def _ser_cached(kind: str, key: str, fetch, days: int = 7):
+        cache_key = f"ser|{kind}|{key}"
+        data = db.cache_get(cache_key, days)
+        if data is not None:
+            return data, True
+        data = fetch()
+        db.cache_put(cache_key, data)
+        return data, False
+
+    def _domain_params():
+        if not settings.seranking_api_key:
+            abort(503, "Analyse de domaines indisponible : service de données non configuré")
+        location = int(request.args.get("location") or 2250)
+        if location not in SOURCES:
+            abort(400, "Pays non pris en charge")
+        return SERanking(settings.seranking_api_key), SOURCES[location], location
+
+    @app.get("/api/domain")
+    @authed
+    def domain_analysis():
+        client, source, location = _domain_params()
+        domain = _domain(request.args.get("domain"))
+        try:
+            parts, fresh = {}, False
+            for kind, fetch in (("overview", lambda: client.overview(domain, source)),
+                                ("keywords", lambda: client.keywords(domain, source)),
+                                ("competitors", lambda: client.competitors(domain, source)),
+                                ("backlinks", lambda: client.backlinks(domain))):
+                key = f"{domain}" if kind == "backlinks" else f"{source}|{domain}"
+                if not fresh and db.cache_get(f"ser|{kind}|{key}", 7) is None:
+                    # une analyse non encore en cache consomme le quota mensuel
+                    check_monthly(g.profile["plan"], "domain", db.usage_month(user_id()).get("domain", 0))
+                    fresh = True
+                parts[kind], _ = _ser_cached(kind, key, fetch)
+        except SERankingError as exc:
+            abort(502, str(exc))
+        if fresh:
+            db.add_usage(user_id(), "domain")
+        return jsonify(domain=domain, location=location, cached=not fresh, **parts)
+
+    @app.get("/api/domain/gap")
+    @authed
+    def domain_gap():
+        client, source, location = _domain_params()
+        competitor, mine = _domain(request.args.get("competitor")), _domain(request.args.get("mine"))
+        key = f"{source}|{competitor}|{mine}"
+        try:
+            if db.cache_get(f"ser|gap|{key}", 7) is None:
+                check_monthly(g.profile["plan"], "domain", db.usage_month(user_id()).get("domain", 0))
+                db.add_usage(user_id(), "domain")
+            rows, cached = _ser_cached("gap", key, lambda: client.gap(competitor, mine, source))
+        except SERankingError as exc:
+            abort(502, str(exc))
+        return jsonify(competitor=competitor, mine=mine, location=location, cached=cached, keywords=rows)
 
     def _market(kind: str, seed: str, location: int) -> tuple[dict, bool]:
         """Données DataForSEO, servies depuis le cache partagé (30 jours) quand c'est possible."""

@@ -213,7 +213,7 @@
         h("ul", {},
           h("li", {}, fmt(p.max_pages) + " pages par audit"), h("li", {}, fmt(p.audits_month) + " audits par mois"),
           h("li", {}, fmt(p.gsc_properties) + " propriété" + (p.gsc_properties > 1 ? "s" : "") + " Search Console suivie" + (p.gsc_properties > 1 ? "s" : "")),
-          h("li", {}, fmt(p.keywords_month) + " recherches de mots-clés par mois"), h("li", {}, fmt(p.tracked_keywords) + " mots-clés suivis chaque jour"), h("li", {}, fmt(p.competitors_month) + " analyses de concurrents par mois")),
+          h("li", {}, fmt(p.keywords_month) + " recherches de mots-clés par mois"), h("li", {}, fmt(p.tracked_keywords) + " mots-clés suivis chaque jour"), h("li", {}, fmt(p.domains_month) + " analyses de domaines par mois"), h("li", {}, fmt(p.competitors_month) + " analyses de concurrents par mois")),
         current === k ? h("span", { class: "btn btn-small", "aria-disabled": "true" }, "Votre offre actuelle")
           : current ? h("a", { class: "btn btn-small" + (featured ? " btn-green" : ""), href: "mailto:contact@vigieseo.fr?subject=" + encodeURIComponent("Passer à l'offre " + p.label) }, p.price ? "Passer à " + p.label : "Revenir au gratuit")
             : h("button", { class: "btn " + (featured ? "btn-green" : "btn-dark"), type: "button", onclick: signIn }, p.price ? "Essayer gratuitement" : "Commencer"));
@@ -543,7 +543,7 @@
   }
 
   /* ---------- vue : mots-clés ---------- */
-  var INTENT_LABEL = { info: "Info", commercial: "Commercial", transactionnel: "Transactionnel", navigation: "Navigation" };
+  var INTENT_LABEL = { info: "Info", commercial: "Commercial", transactionnel: "Transactionnel", navigation: "Navigation", local: "Local" };
   var QUESTION_RE = /^(comment|pourquoi|quel|quelle|quels|quelles|où|ou|quand|combien|qui|que|qu'|est-ce|peut-on|faut-il)\b|\?/i;
   function kdBadge(kd) {
     if (kd == null) return h("span", { class: "muted" }, "–");
@@ -975,6 +975,124 @@
       h("section", { class: "section" }, addForm));
   }
 
+  /* ---------- vue : analyse de domaine ---------- */
+  var COUNTRY = { 2250: "France", 2056: "Belgique", 2756: "Suisse", 2124: "Canada" };
+  function keywordTable(rows, cols, filename) {
+    var st = { sort: cols.indexOf("traffic") !== -1 ? "traffic" : "volume", dir: -1, q: "" }, tbody = h("tbody"), thead = h("thead");
+    var LABEL = { keyword: "Mot-clé", position: "Position", their_position: "Sa position", volume: "Volume", difficulty: "Difficulté", cpc: "CPC", traffic: "Trafic", intent: "Intention", url: "Page" };
+    function th(c) {
+      var sortable = c !== "url" && c !== "intent", num = c !== "keyword" && c !== "url" && c !== "intent";
+      return h("th", { class: num ? "num" : "" }, sortable ? h("button", { type: "button", class: "th-sort", onclick: function () {
+        st.dir = st.sort === c ? -st.dir : (c === "keyword" || c === "position" || c === "difficulty" ? 1 : -1); st.sort = c; draw(); } },
+        LABEL[c] + (st.sort === c ? (st.dir > 0 ? " ↑" : " ↓") : "")) : LABEL[c]);
+    }
+    function cell(r, c) {
+      if (c === "keyword") return h("td", {}, r.keyword);
+      if (c === "position") return h("td", { class: "num" }, h("b", {}, r.position), r.prev && r.prev !== r.position ? [" ", delta(r.prev - r.position)] : null);
+      if (c === "difficulty") return h("td", { class: "num" }, kdBadge(r.difficulty));
+      if (c === "cpc") return h("td", { class: "num" }, r.cpc != null ? fmt(r.cpc, 2) + " €" : "–");
+      if (c === "intent") return h("td", {}, r.intent ? h("span", { class: "intent intent-" + r.intent }, INTENT_LABEL[r.intent] || r.intent) : "–");
+      if (c === "url") return h("td", { class: "url" }, r.url ? h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.url.replace(/^https?:\/\/[^/]+/, "") || "/") : "");
+      return h("td", { class: "num" }, fmt(r[c]));
+    }
+    function draw() {
+      fill(thead, h("tr", {}, cols.map(th)));
+      var q = st.q.toLowerCase();
+      var f = rows.filter(function (r) { return !q || r.keyword.toLowerCase().indexOf(q) !== -1; }).sort(function (a, b) {
+        var va = a[st.sort], vb = b[st.sort];
+        if (st.sort === "keyword") return String(va).localeCompare(vb) * st.dir;
+        if (va == null) return 1; if (vb == null) return -1; return (va - vb) * st.dir;
+      });
+      fill(tbody, f.map(function (r) { return h("tr", {}, cols.map(function (c) { return cell(r, c); })); }));
+      if (!f.length) tbody.append(h("tr", {}, h("td", { colspan: cols.length, class: "muted" }, "Aucun mot-clé.")));
+    }
+    draw();
+    return h("div", {}, h("div", { class: "form-row", style: "justify-content:flex-end;margin-bottom:12px" },
+      h("input", { type: "search", placeholder: "Filtrer", "aria-label": "Filtrer les mots-clés", oninput: function (e) { st.q = e.target.value; draw(); } }),
+      h("button", { class: "btn btn-small", type: "button", onclick: function () {
+        csv([cols.map(function (c) { return LABEL[c]; })].concat(rows.map(function (r) { return cols.map(function (c) { return c === "intent" ? INTENT_LABEL[r.intent] || "" : r[c]; }); })), filename);
+      } }, "Exporter CSV")),
+      h("div", { class: "table-wrap" }, h("table", {}, thead, tbody)));
+  }
+  function distributionBar(dist) {
+    var labels = ["1-5", "6-10", "11-20", "21-50", "51-100"], colors = ["#137445", "#2bb673", "#a5dfc0", "#d2edff", "#e9dfdb"];
+    var total = dist.reduce(function (a, b) { return a + b; }, 0) || 1, bar = h("div", { class: "dist", role: "img", "aria-label": "Répartition des positions" });
+    dist.forEach(function (n, i) { if (n) { var seg = h("span", { title: "Positions " + labels[i] + " : " + fmt(n) }); seg.style.flex = n; seg.style.background = colors[i]; bar.append(seg); } });
+    return h("div", {}, bar, h("div", { class: "legend-row" }, dist.map(function (n, i) {
+      var dot = h("span", { class: "dot" }); dot.style.background = colors[i];
+      return h("span", {}, dot, "Positions " + labels[i] + " : ", h("b", {}, fmt(n)), " (" + Math.round(n / total * 100) + " %)");
+    })));
+  }
+  function viewDomain(domain, loc) {
+    loc = loc || "2250";
+    var input = h("input", { type: "text", id: "dm-domain", value: domain || "", placeholder: "concurrent.fr", required: true });
+    var country = h("select", { id: "dm-loc", "aria-label": "Pays" }, Object.keys(COUNTRY).map(function (c) { return h("option", { value: c, selected: c === loc }, COUNTRY[c]); }));
+    var form = h("form", { class: "card form-row", onsubmit: function (e) {
+      e.preventDefault();
+      location.hash = "#/domaine/" + encodeURIComponent(input.value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "")) + "?loc=" + country.value;
+    } }, h("div", { class: "field", style: "flex:3;min-width:240px" }, h("label", { for: "dm-domain" }, "Domaine à analyser"), input),
+      h("div", { class: "field", style: "flex:0 0 170px" }, h("label", { for: "dm-loc" }, "Pays"), country), h("button", { class: "btn btn-dark", type: "submit" }, "Analyser"));
+    var out = h("div");
+    fill(main, h("section", { class: "hero", style: "margin-bottom:28px" }, h("p", { class: "eyebrow" }, "Analyse de domaine"),
+      h("h1", {}, domain ? domain : "Ce que Google voit de n'importe quel site."),
+      h("p", {}, "Trafic estimé, mots-clés positionnés, concurrents, écart de mots-clés et backlinks : pour votre site comme pour ceux de vos concurrents.")),
+      form, h("p", { class: "note", style: "margin:10px 0 0" }, ME ? fmt(ME.usage.domain || 0) + " / " + fmt(ME.limits.domains_month) + " analyses ce mois-ci (un domaine déjà analysé il y a moins de 7 jours ne compte pas)." : ""), out);
+    if (!domain) {
+      api("/api/sites").then(function (sites) {
+        if (sites.length) fill(out, h("div", { style: "margin-top:24px" }, h("p", { class: "note", style: "margin-bottom:8px" }, "Vos sites :"),
+          h("div", { class: "chips" }, sites.map(function (s) { return h("a", { class: "chip", href: "#/domaine/" + encodeURIComponent(s.key) }, s.key); }))));
+      });
+      return;
+    }
+    fill(out, h("div", { class: "empty" }, h("span", { class: "spinner" }), h("p", { class: "muted" }, "Analyse de " + domain + "…")));
+    api("/api/domain?domain=" + encodeURIComponent(domain) + "&location=" + loc).then(function (d) {
+      refreshMe();
+      var o = d.overview, b = d.backlinks, mine = (ME && sessionStorage.getItem("my-domain")) || null;
+      var gapBox = h("div");
+      function showGap(competitor, me) {
+        fill(gapBox, h("div", { class: "card" }, h("span", { class: "spinner" }), " Recherche des mots-clés de " + competitor + " absents de " + me + "…"));
+        gapBox.scrollIntoView({ behavior: "smooth", block: "start" });
+        api("/api/domain/gap?competitor=" + encodeURIComponent(competitor) + "&mine=" + encodeURIComponent(me) + "&location=" + loc).then(function (g) {
+          fill(gapBox, h("section", { class: "section" }, h("h2", {}, "Écart de mots-clés"),
+            h("p", { class: "muted", style: "margin:6px 0 16px" }, g.keywords.length + " mots-clés où " + competitor + " est positionné et pas " + me + ", par volume. Autant d'idées de pages ou d'articles."),
+            keywordTable(g.keywords, ["keyword", "volume", "difficulty", "cpc", "position", "intent", "url"], "ecart-" + competitor + "-" + me + ".csv")));
+        }).catch(function (e) { fill(gapBox, errorBox(e)); });
+      }
+      var myInput = h("input", { type: "text", placeholder: "votre-site.fr", value: mine || "", "aria-label": "Votre domaine", style: "max-width:220px" });
+      fill(out,
+        h("div", { class: "kpis", style: "margin-top:28px" },
+          kpi(fmt(o.traffic), "visites organiques estimées / mois", "blue"), kpi(fmt(o.keywords), "mots-clés positionnés"),
+          kpi(fmt(o.value) + " €", "valeur du trafic / mois"), kpi(b.authority + " / 100", "autorité (backlinks)", "pink"), kpi(fmt(b.refdomains), "domaines référents")),
+        h("p", { class: "muted", style: "margin:14px 0 0" }, "Ce mois-ci : ", h("b", {}, "+" + fmt(o.new)), " nouveaux mots-clés, ", h("b", {}, "−" + fmt(o.lost)), " perdus, ",
+          h("b", {}, "▲ " + fmt(o.up)), " en hausse, ", h("b", {}, "▼ " + fmt(o.down)), " en baisse." + (d.cached ? " (données de moins de 7 jours)" : "")),
+        h("section", { class: "section" }, h("h2", { style: "margin-bottom:16px" }, "Répartition des positions"), h("div", { class: "card" }, distributionBar(o.distribution))),
+        h("section", { class: "section" }, h("h2", { style: "margin-bottom:6px" }, "Mots-clés qui apportent du trafic"),
+          h("p", { class: "muted", style: "margin-bottom:12px" }, "Les " + d.keywords.length + " premiers, classés par trafic estimé."),
+          d.keywords.length ? keywordTable(d.keywords, ["keyword", "position", "volume", "difficulty", "cpc", "traffic", "intent", "url"], "mots-cles-" + domain + ".csv")
+            : h("p", { class: "muted" }, "Aucun mot-clé positionné dans le top 100 pour l'instant.")),
+        h("section", { class: "section" }, h("header", {}, h("h2", {}, "Concurrents organiques"),
+          h("form", { class: "form-row", onsubmit: function (e) { e.preventDefault(); sessionStorage.setItem("my-domain", myInput.value.trim()); } },
+            h("span", { class: "note" }, "Votre domaine, pour l'écart de mots-clés :"), myInput)),
+          d.competitors.length ? h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Domaine"), h("th", { class: "num" }, "Mots-clés en commun"),
+            h("th", { class: "num" }, "Mots-clés qu'il a en plus"), h("th", { class: "num" }, "Trafic estimé"), h("th", {}, ""))),
+            h("tbody", {}, d.competitors.map(function (c) {
+              return h("tr", {}, h("td", {}, h("a", { href: "#/domaine/" + encodeURIComponent(c.domain) + "?loc=" + loc }, c.domain)),
+                h("td", { class: "num" }, fmt(c.common)), h("td", { class: "num" }, fmt(c.missing)), h("td", { class: "num" }, fmt(c.traffic)),
+                h("td", {}, h("button", { class: "btn btn-small", type: "button", onclick: function () {
+                  var me = myInput.value.trim() || domain;
+                  showGap(me === domain ? c.domain : c.domain, me);
+                } }, "Ses mots-clés absents de chez moi")));
+            })))) : h("p", { class: "muted" }, "Pas encore assez de mots-clés pour identifier des concurrents."), gapBox),
+        h("section", { class: "section" }, h("h2", { style: "margin-bottom:16px" }, "Backlinks"),
+          h("div", { class: "kpis" }, kpi(fmt(b.backlinks), "backlinks"), kpi(fmt(b.refdomains), "domaines référents", "blue"),
+            kpi(fmt(b.dofollow_refdomains), "domaines en dofollow"), kpi(b.dofollow_pct + " %", "liens dofollow")),
+          b.anchors.length ? h("div", { class: "grid", style: "margin-top:20px" },
+            h("div", { class: "card" }, h("h3", { style: "margin-bottom:10px" }, "Ancres les plus utilisées"), h("ol", { class: "top10" }, b.anchors.map(function (a) { return h("li", {}, a[0] || "(sans texte)", h("span", { class: "muted" }, " · " + fmt(a[1]))); }))),
+            h("div", { class: "card" }, h("h3", { style: "margin-bottom:10px" }, "Pages les plus liées"), h("ol", { class: "top10" }, b.pages.map(function (p) { return h("li", {}, h("a", { class: "url", href: p[0], target: "_blank", rel: "noopener noreferrer" }, (p[0] || "").replace(/^https?:\/\/[^/]+/, "") || "/"), h("span", { class: "muted" }, " · " + fmt(p[1]))); }))))
+            : h("p", { class: "muted", style: "margin-top:12px" }, "Aucun backlink connu pour ce domaine.")));
+    }).catch(function (e) { fill(out, errorBox(e)); });
+  }
+
   /* ---------- vue : compte ---------- */
   function viewAccount() {
     loading();
@@ -990,7 +1108,7 @@
           h("p", {}, (fullName() && ME.email ? ME.email + " · " : "") + "Offre " + L.label + (ME.running ? " · " + ME.running + " audit(s) en cours" : ""))),
         h("div", { class: "grid" },
           h("div", { class: "card", style: "display:grid;gap:18px" }, h("h3", {}, "Consommation ce mois-ci"),
-            meter("Audits", U.audit, L.audits_month), meter("Analyses de concurrents", U.competitor, L.competitors_month), meter("Recherches de mots-clés", U.keywords, L.keywords_month),
+            meter("Audits", U.audit, L.audits_month), meter("Analyses de concurrents", U.competitor, L.competitors_month), meter("Recherches de mots-clés", U.keywords, L.keywords_month), meter("Analyses de domaines", U.domain || 0, L.domains_month),
             h("p", { class: "note" }, "Jusqu'à " + fmt(L.max_pages) + " pages par audit et " + L.running + " audit(s) en parallèle.")),
           h("div", { class: "card blue", style: "display:grid;gap:14px;align-content:start;justify-items:start" }, h("h3", {}, "Search Console"),
             h("p", {}, ME.google ? "Connectée." : "Non connectée."), h("a", { class: "btn btn-small", href: "#/positions" }, ME.google ? "Gérer" : "Connecter"),
@@ -1034,7 +1152,7 @@
     window.scrollTo(0, 0);
     if (!SESSION) { viewLanding(name === "offres"); main.focus({ preventScroll: true }); return; }
     document.querySelectorAll("#nav a").forEach(function (a) {
-      var active = a.dataset.route === ({ site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking" }[name] || name);
+      var active = a.dataset.route === ({ site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain" }[name] || name);
       if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     if (name === "site" && parts[1]) viewSite(parts[1]);
@@ -1042,6 +1160,7 @@
     else if (name === "plan") viewPlan(parts[1]);
     else if (name === "positions") viewPositions(qs.get("google"));
     else if (name === "suivi") viewTracking(parts[1]);
+    else if (name === "domaine") viewDomain(parts[1], qs.get("loc"));
     else if (name === "mots-cles") viewKeywords();
     else if (name === "concurrents") viewCompetitors(parts[1]);
     else if (name === "compte" || name === "offres") viewAccount();

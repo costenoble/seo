@@ -18,6 +18,7 @@ class Settings:
     cron_secret: str = ""
     dataforseo_login: str = ""           # données de marché (volumes, difficulté…) — facultatif
     dataforseo_password: str = ""
+    seranking_api_key: str = ""          # analyse de domaines et backlinks — facultatif
     step_budget: float = 40.0            # secondes de travail par appel, sous la durée max de la fonction
     allow_private_urls: bool = False     # développement local uniquement
     serve_static: bool = False           # développement local : Flask sert aussi public/
@@ -37,6 +38,7 @@ class Settings:
             cron_secret=env("CRON_SECRET", ""),
             dataforseo_login=env("DATAFORSEO_LOGIN", ""),
             dataforseo_password=env("DATAFORSEO_PASSWORD", ""),
+            seranking_api_key=env("SERANKING_API_KEY", "").strip().strip('"'),
             step_budget=float(env("STEP_BUDGET", "40")),
             allow_private_urls=env("ALLOW_PRIVATE_URLS", "") == "1",
             serve_static=env("SERVE_STATIC", "") == "1",
