@@ -22,7 +22,7 @@ from . import crypto, google
 from .dataforseo import LOCATIONS, DataForSEO, DataForSEOError
 from .insights import analyze
 from .seranking import SOURCES, SERanking, SERankingError
-from . import tracking
+from . import emails, notify, tracking
 from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
 from .config import APP_NAME, Settings
@@ -121,6 +121,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         touched = asyncio.run(run_tick(db.store, budget=settings.step_budget * 0.6, url_guard=guard))
         ranks = tracking.run(db, _dfs(), budget=max(5.0, settings.step_budget - (time.monotonic() - start) - 10)) \
             if settings.dataforseo_login else None
+        mails = notify.run(db, settings, budget=max(3.0, settings.step_budget - (time.monotonic() - start) - 8))
         synced = []
         while time.monotonic() - start < settings.step_budget - 10:  # imports Search Console quotidiens
             due = db.due_properties(limit=1)
@@ -133,7 +134,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             except Exception as exc:  # une propriété en erreur ne bloque pas les autres
                 log.warning("Import quotidien %s : %s", p["site"], exc)
             db.mark_synced(p["user_id"], p["site"])
-        return jsonify(audits=touched, gsc=synced, ranks=ranks)
+        return jsonify(audits=touched, gsc=synced, ranks=ranks, emails=mails)
 
     def _sync_recent(uid, site, enc):
         token = crypto.decrypt(settings.token_key, enc)
@@ -161,6 +162,57 @@ def create_app(settings: Settings | None = None) -> Flask:
                 break
         pages = google.search_analytics_by(access, site, start, end, ["page"])
         db.replace_gsc_pages(uid, site, query_pages, pages)
+
+    # -- e-mails -------------------------------------------------------------------------------------
+    @app.get("/api/notifications")
+    @authed
+    def notifications():
+        return jsonify(**db.notification_settings(user_id()), email=g.user["email"], enabled=bool(settings.resend_api_key),
+                       test_mode="resend.dev" in settings.email_from)
+
+    @app.post("/api/notifications")
+    @authed
+    def notifications_update():
+        data = body()
+        values = {k: bool(data[k]) for k in ("weekly_digest", "alerts") if k in data}
+        if values:
+            db.set_notification_settings(user_id(), **values)
+        return jsonify(**db.notification_settings(user_id()))
+
+    @app.post("/api/notifications/test")
+    @authed
+    def notifications_test():
+        """Envoie tout de suite le résumé hebdomadaire à l'utilisateur (3 fois par heure au plus)."""
+        if not settings.resend_api_key:
+            abort(503, "E-mails non configurés")
+        with db.conn() as c:
+            recent = c.execute("""SELECT count(*) n FROM usage_events WHERE user_id=%s AND kind='email_test'
+                                  AND created_at > now() - interval '1 hour'""", (user_id(),)).fetchone()["n"]
+        if recent >= 3:
+            abort(429, "Trois e-mails de test par heure au maximum")
+        data = notify.build_digest(db, user_id()) or {"projects": [], "gsc": [], "tracking": [], "tasks": []}
+        name = (g.user.get("name") or "").split(" ")[0] or (g.user["email"] or "").split("@")[0]
+        unsub = emails.unsubscribe_url(settings.app_url, settings.token_key, user_id(), "digest")
+        subject, html, text = emails.digest(settings.app_url, name, data, unsub)
+        try:
+            emails.send(settings.resend_api_key, settings.email_from, g.user["email"], "[Test] " + subject, html, text, unsub)
+        except emails.EmailError as exc:
+            abort(502, f"Envoi refusé par Resend : {exc}")
+        db.add_usage(user_id(), "email_test")
+        return jsonify(sent=True, to=g.user["email"])
+
+    @app.route("/api/unsubscribe", methods=["GET", "POST"])
+    def unsubscribe():
+        """Lien de désinscription des e-mails (sans connexion) ; POST pour le désabonnement en un clic des messageries."""
+        uid, kind, token = request.args.get("u", ""), request.args.get("k", ""), request.args.get("t", "")
+        if kind not in ("digest", "alerts") or not emails.verify(settings.token_key, uid, kind, token):
+            return Response("Lien invalide.", status=400, mimetype="text/plain")
+        db.set_notification_settings(uid, **({"weekly_digest": False} if kind == "digest" else {"alerts": False}))
+        label = "le résumé hebdomadaire" if kind == "digest" else "les alertes"
+        return Response(f"""<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Désinscription</title><body style="font-family:system-ui,sans-serif;background:#faf4f2;display:grid;place-items:center;min-height:90vh;margin:0">
+<div style="background:#fff;border-radius:24px;padding:32px;max-width:420px;text-align:center"><h1 style="font-size:22px">C'est noté</h1>
+<p>Vous ne recevrez plus {label} de Vigie SEO.</p><p><a href="/#/compte">Gérer mes e-mails</a></p></div></body></html>""", mimetype="text/html")
 
     # -- compte -------------------------------------------------------------------------------
     @app.get("/api/me")

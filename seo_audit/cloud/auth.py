@@ -31,4 +31,5 @@ def verify_token(token: str, settings) -> dict:
                             issuer=f"{settings.supabase_url}/auth/v1", options={"require": ["exp", "sub"]})
     except jwt.PyJWTError as exc:
         raise AuthError(f"Session invalide : {exc}") from exc
-    return {"id": claims["sub"], "email": claims.get("email")}
+    meta = claims.get("user_metadata") or {}
+    return {"id": claims["sub"], "email": claims.get("email"), "name": (meta.get("full_name") or meta.get("name") or "").strip() or None}

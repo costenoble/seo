@@ -32,8 +32,11 @@ class Db:
     # -- profil, plan et consommation ------------------------------------------
     def profile(self, user: dict) -> dict:
         with self.conn() as c:
-            c.execute("INSERT INTO profiles (user_id, email) VALUES (%s,%s) ON CONFLICT (user_id) DO NOTHING",
-                      (user["id"], user.get("email")))
+            c.execute("INSERT INTO profiles (user_id, email, name) VALUES (%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",
+                      (user["id"], user.get("email"), user.get("name")))
+            if user.get("name"):
+                c.execute("UPDATE profiles SET name=%s WHERE user_id=%s AND name IS DISTINCT FROM %s",
+                          (user["name"], user["id"], user["name"]))
             return c.execute("SELECT plan, email, plan_renews_at, created_at FROM profiles WHERE user_id=%s",
                              (user["id"],)).fetchone()
 
@@ -426,6 +429,92 @@ class Db:
     def purge_stale_serp_tasks(self, hours: int) -> None:
         with self.conn() as c:
             c.execute("DELETE FROM serp_tasks WHERE created_at < now() - make_interval(hours => %s)", (hours,))
+
+    # -- notifications -------------------------------------------------------------------------------
+    def notification_settings(self, user_id: str) -> dict:
+        with self.conn() as c:
+            row = c.execute("SELECT weekly_digest, alerts FROM notification_settings WHERE user_id=%s", (user_id,)).fetchone()
+        return dict(row) if row else {"weekly_digest": True, "alerts": True}
+
+    def set_notification_settings(self, user_id: str, **values) -> None:
+        cols = [k for k in ("weekly_digest", "alerts", "last_digest_at", "last_alert_email_at") if k in values]
+        with self.conn() as c:
+            c.execute(f"""INSERT INTO notification_settings (user_id, {", ".join(cols)}) VALUES (%s, {", ".join(["%s"] * len(cols))})
+                          ON CONFLICT (user_id) DO UPDATE SET {", ".join(f"{k}=EXCLUDED.{k}" for k in cols)}, updated_at=now()""",
+                      (user_id, *[values[k] for k in cols]))
+
+    def audits_to_notify(self) -> list[dict]:
+        with self.conn() as c:
+            c.execute("UPDATE audits SET notified_at=now() WHERE notified_at IS NULL AND status='failed'")
+            return c.execute("""SELECT id::text, user_id::text, site, summary FROM audits
+                                WHERE notified_at IS NULL AND status='done' AND kind='site' ORDER BY finished_at LIMIT 50""").fetchall()
+
+    def mark_audit_notified(self, audit_id: str) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE audits SET notified_at=now() WHERE id=%s", (audit_id,))
+
+    def add_alert(self, user_id, key, kind, tone, site, title, detail="", link="") -> int:
+        with self.conn() as c:
+            return c.execute("""INSERT INTO alerts (user_id, dedupe_key, kind, tone, site, title, detail, link)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (user_id, dedupe_key) DO NOTHING""",
+                             (user_id, key, kind, tone, site, title, detail, link)).rowcount
+
+    def rank_moves(self) -> list[dict]:
+        """Relevés d'hier et d'aujourd'hui comparés au jour précédent."""
+        with self.conn() as c:
+            return c.execute("""SELECT k.id::text keyword_id, k.user_id::text, k.site, k.keyword, c.date, c.position, p.position prev
+                                FROM rank_checks c JOIN rank_keywords k ON k.id = c.keyword_id
+                                JOIN rank_checks p ON p.keyword_id = c.keyword_id AND p.date = c.date - 1
+                                WHERE c.date >= current_date - 1""").fetchall()
+
+    def users_with_pending_alerts(self, sent_before) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT a.user_id::text, p.email, p.name, coalesce(s.alerts, true) alerts_enabled
+                                FROM alerts a JOIN profiles p ON p.user_id = a.user_id
+                                LEFT JOIN notification_settings s ON s.user_id = a.user_id
+                                WHERE a.sent_at IS NULL AND (s.last_alert_email_at IS NULL OR s.last_alert_email_at < %s)
+                                GROUP BY 1, 2, 3, 4 LIMIT 50""", (sent_before,)).fetchall()
+
+    def pending_alerts(self, user_id: str) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT id, kind, tone, site, title, detail, link FROM alerts
+                                WHERE user_id=%s AND sent_at IS NULL ORDER BY tone, created_at LIMIT 20""", (user_id,)).fetchall()
+
+    def mark_alerts_sent(self, user_id: str, ids: list, now) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE alerts SET sent_at=%s WHERE user_id=%s AND id = ANY(%s)", (now, user_id, ids))
+        self.set_notification_settings(user_id, last_alert_email_at=now)
+
+    def users_due_digest(self, week_start, limit: int = 10) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT p.user_id::text, p.email, p.name FROM profiles p
+                                LEFT JOIN notification_settings s ON s.user_id = p.user_id
+                                WHERE coalesce(s.weekly_digest, true) AND coalesce(s.last_digest_at, p.created_at) < %s
+                                ORDER BY coalesce(s.last_digest_at, p.created_at) LIMIT %s""", (week_start, limit)).fetchall()
+
+    def mark_digest_sent(self, user_id: str, now) -> None:
+        self.set_notification_settings(user_id, last_digest_at=now)
+
+    def gsc_week(self, user_id: str, site: str) -> dict | None:
+        with self.conn() as c:
+            last = c.execute("SELECT max(date) d FROM gsc_daily WHERE user_id=%s AND site=%s", (user_id, site)).fetchone()["d"]
+            if not last:
+                return None
+            sql = """SELECT coalesce(sum(clicks),0) clicks, coalesce(sum(impressions),0) impressions FROM gsc_daily
+                     WHERE user_id=%s AND site=%s AND date BETWEEN %s AND %s"""
+            cur = c.execute(sql, (user_id, site, last - timedelta(days=6), last)).fetchone()
+            prev = c.execute(sql, (user_id, site, last - timedelta(days=13), last - timedelta(days=7))).fetchone()
+
+        def pct(a, b):
+            return round((a - b) / b * 100) if b else None
+        return {"clicks": round(cur["clicks"]), "impressions": round(cur["impressions"]),
+                "clicks_pct": pct(cur["clicks"], prev["clicks"]), "impressions_pct": pct(cur["impressions"], prev["impressions"])}
+
+    def top_tasks(self, user_id: str, n: int = 3) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("""SELECT title, site, priority FROM tasks WHERE user_id=%s AND status='todo'
+                                ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at
+                                LIMIT %s""", (user_id, n)).fetchall()
 
     # -- cache des données payantes ----------------------------------------------------------
     def cache_get(self, key: str, max_age_days: int = 30):

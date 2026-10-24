@@ -441,3 +441,65 @@ def test_domain_analysis_and_gap(pg_dsn, monkeypatch):
     # sans clé configurée : message clair
     off = cloud_app.create_app(settings(pg_dsn)).test_client()
     assert off.get("/api/domain?domain=x.fr", headers=h).status_code == 503
+
+
+def test_alerts_digest_and_unsubscribe(pg_dsn, monkeypatch, site):
+    from datetime import date, datetime, timedelta, timezone
+    from seo_audit.cloud import emails, notify
+    sent = []
+    monkeypatch.setattr(emails, "send", lambda key, frm, to, subject, html, text, unsub="": sent.append((to, subject, html, text)) or "id")
+    st = settings(pg_dsn, resend_api_key="re_test", email_from="Vigie SEO <vigie@exemple.fr>", app_url="https://app.test")
+    client = cloud_app.create_app(st).test_client()
+    db = cloud_app.Db(pg_dsn)
+    uid, h = new_user(pg_dsn, plan="pro")
+    with psycopg.connect(pg_dsn) as c:  # ne garder que les données de cet utilisateur dans le moteur d'envoi
+        c.execute("update audits set notified_at = now() where notified_at is null")
+        c.execute("insert into notification_settings (user_id, last_digest_at) select user_id, now() from profiles on conflict (user_id) do update set last_digest_at = now()")
+        c.execute("update alerts set sent_at = now() where sent_at is null")
+
+    # 1) un audit terminé avec un score en baisse et des problèmes graves → alertes
+    audit_id, _ = run_audit(client, h, site + "/")
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("""update audits set summary = jsonb_set(summary, '{comparison}', '{"score_delta": -8, "new": [{"severity": "high", "message": "Erreur client (404)", "url": "u", "code": "http_4xx"}], "fixed": []}')
+                     where id=%s""", (audit_id,))
+    # 2) un mot-clé suivi qui sort du top 10 entre hier et aujourd'hui
+    with psycopg.connect(pg_dsn) as c:
+        kid = c.execute("insert into rank_keywords (user_id, site, keyword) values (%s,'127.0.0.1','tente') returning id", (uid,)).fetchone()[0]
+        c.execute("insert into rank_checks values (%s, current_date - 1, 7, null, '{}'), (%s, current_date, 14, null, '{}')", (kid, kid))
+    stats = notify.run(db, st, budget=20)
+    assert stats["alerts_created"] == 3 and stats["alert_emails"] == 1
+    to, subject, html, text = sent[-1]
+    assert to.endswith("@exemple.fr") and "3 alertes" in subject
+    assert "Score en baisse de 8 points" in html and "sort du top 10" in html and "https://app.test/api/unsubscribe?u=" in html
+    # pas de second e-mail dans l'heure, ni de doublon d'alerte
+    assert notify.run(db, st, budget=20)["alert_emails"] == 0 and len(sent) == 1
+
+    # 3) résumé hebdomadaire : dû une fois par semaine, lundi matin
+    monday = notify.week_start(datetime.now(timezone.utc))
+    db.set_notification_settings(uid, last_digest_at=monday - timedelta(days=1))
+    stats = notify.run(db, st, budget=20, now=monday + timedelta(hours=1))
+    assert stats["digests"] == 1 and "Votre semaine SEO" in sent[-1][1] and "127.0.0.1" in sent[-1][2]
+    assert notify.run(db, st, budget=20, now=monday + timedelta(hours=2))["digests"] == 0
+
+    # 4) désinscription par lien signé, et lien falsifié refusé
+    url = emails.unsubscribe_url("https://app.test", st.token_key, uid, "digest").replace("https://app.test", "")
+    assert client.get(url.replace("&t=", "&t=x")).status_code == 400
+    assert client.get(url).status_code == 200
+    assert client.get("/api/notifications", headers=h).get_json()["weekly_digest"] is False
+    db.set_notification_settings(uid, last_digest_at=monday - timedelta(days=1))
+    assert notify.run(db, st, budget=20, now=monday + timedelta(hours=3))["digests"] == 0
+
+    # 5) e-mail de test depuis le compte, limité à 3 par heure
+    for _ in range(3):
+        assert client.post("/api/notifications/test", headers=h, json={}).status_code == 200
+    assert client.post("/api/notifications/test", headers=h, json={}).status_code == 429
+    assert sent[-1][1].startswith("[Test]")
+
+
+def test_week_start_is_monday_morning():
+    from datetime import datetime, timezone
+    from seo_audit.cloud.notify import week_start
+    wed = datetime(2026, 10, 28, 12, tzinfo=timezone.utc)
+    assert week_start(wed) == datetime(2026, 10, 26, 6, tzinfo=timezone.utc)
+    early_monday = datetime(2026, 10, 26, 5, tzinfo=timezone.utc)
+    assert week_start(early_monday) == datetime(2026, 10, 19, 6, tzinfo=timezone.utc)

@@ -236,6 +236,17 @@
     }); });
   }).observe(document.body, { childList: true, subtree: true });
 
+  /* ---------- notifications maison (bas de l'écran) ---------- */
+  var toastBox = h("div", { class: "toasts", role: "status", "aria-live": "polite" });
+  document.body.append(toastBox);
+  function toast(message, tone) {
+    var t = h("div", { class: "toast " + (tone || "") }, h("span", { class: "toast-dot", "aria-hidden": "true" }), h("span", {}, message),
+      h("button", { type: "button", class: "toast-close", "aria-label": "Fermer", onclick: function () { dismiss(); } }, "×"));
+    function dismiss() { t.classList.add("leaving"); setTimeout(function () { t.remove(); }, 300); }
+    toastBox.append(t);
+    setTimeout(dismiss, tone === "bad" ? 7000 : 4000);
+  }
+
   /* ---------- fenêtres ---------- */
   function closeOverlay() { overlay.hidden = true; fill(overlay); }
   function modal(title, body) {
@@ -1180,6 +1191,38 @@
     }).catch(function (e) { fill(out, errorBox(e)); });
   }
 
+  /* ---------- réglages des e-mails ---------- */
+  function toggle(id, label, desc, checked, onchange) {
+    var input = h("input", { type: "checkbox", id: id, role: "switch", checked: checked, onchange: function (e) { onchange(e.target.checked, input); } });
+    return h("label", { class: "switch-row", for: id }, h("span", { class: "switch-text" }, h("b", {}, label), h("span", { class: "muted" }, desc)),
+      input, h("span", { class: "switch", "aria-hidden": "true" }, h("span", { class: "switch-knob" })));
+  }
+  function emailSettings() {
+    var box = h("section", { class: "section" }, h("h2", { style: "margin-bottom:16px" }, "E-mails"), h("div", { class: "card" }, h("span", { class: "spinner" })));
+    api("/api/notifications").then(function (n) {
+      var status = h("p", { class: "note", "aria-live": "polite" });
+      function save(field) {
+        return function (value, input) {
+          var data = {}; data[field] = value;
+          api("/api/notifications", data).then(function () { toast(value ? "C'est activé ✓" : "C'est coupé", value ? "good" : ""); })
+            .catch(function (e) { input.checked = !value; toast(e.message, "bad"); });
+        };
+      }
+      var testBtn = h("button", { class: "btn btn-small", type: "button", onclick: function () {
+        testBtn.disabled = true;
+        api("/api/notifications/test", {}).then(function (r) { toast("E-mail de test envoyé à " + r.to + " ✓", "good"); })
+          .catch(function (e) { toast(e.message, "bad"); }).then(function () { testBtn.disabled = false; });
+      } }, "M'envoyer un e-mail de test");
+      fill(box.lastChild,
+        toggle("ntf-digest", "Résumé hebdomadaire", "Chaque lundi matin : vos scores, vos positions et les actions prioritaires.", n.weekly_digest, save("weekly_digest")),
+        toggle("ntf-alerts", "Alertes", "Score en baisse, problème grave, mot-clé qui chute ou entre dans le top 10. Une fois par heure au plus.", n.alerts, save("alerts")),
+        h("div", { class: "form-row", style: "margin-top:16px;align-items:center" }, n.enabled ? testBtn : null,
+          h("span", { class: "note" }, n.enabled ? "Envoyés à " + n.email + "." + (n.test_mode ? " Mode test : seule l'adresse du compte Resend reçoit les e-mails tant que le domaine d'envoi n'est pas vérifié." : "")
+            : "Les e-mails ne sont pas encore configurés sur ce serveur.")), status);
+    }).catch(function (e) { fill(box.lastChild, errorBox(e)); });
+    return box;
+  }
+
   /* ---------- vue : compte ---------- */
   function viewAccount() {
     loading();
@@ -1200,6 +1243,7 @@
           h("div", { class: "card blue", style: "display:grid;gap:14px;align-content:start;justify-items:start" }, h("h3", {}, "Search Console"),
             h("p", {}, ME.google ? "Connectée." : "Non connectée."), h("a", { class: "btn btn-small", href: "#/positions" }, ME.google ? "Gérer" : "Connecter"),
             h("button", { class: "btn btn-small", type: "button", onclick: function () { sb.auth.signOut(); } }, "Se déconnecter"))),
+        emailSettings(),
         h("section", { class: "section", id: "offres" }, h("h2", { style: "margin-bottom:8px" }, "Changer d'offre"),
           h("p", { class: "note", style: "margin-bottom:22px" }, "Le paiement en ligne arrive bientôt : en attendant, écrivez-nous pour changer d'offre."), plansGrid(ME.plan)),
         h("section", { class: "section" }, h("details", { class: "acc" }, h("summary", {}, "Supprimer mon compte"),
