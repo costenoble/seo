@@ -35,6 +35,9 @@
   }
   var nf = new Intl.NumberFormat("fr-FR");
   function fmt(n, d) { return n == null || n === "" ? "–" : (d ? Number(n).toLocaleString("fr-FR", { maximumFractionDigits: d }) : nf.format(Math.round(n))); }
+  // Pays dans l'ordre utile (les clés numériques d'un objet JS sont sinon triées par code)
+  var COUNTRY_ORDER = ["2250", "2056", "2756", "2124"];
+  function countryKeys(obj) { return COUNTRY_ORDER.filter(function (k) { return k in obj; }).concat(Object.keys(obj).filter(function (k) { return COUNTRY_ORDER.indexOf(k) === -1; })); }
   function fdate(s, long) { return new Date(s).toLocaleDateString("fr-FR", long ? { day: "numeric", month: "long", year: "numeric" } : { day: "numeric", month: "short" }); }
   function fdatetime(s) { return new Date(s).toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" }); }
   function scoreColor(s) { return s >= 85 ? "var(--green)" : s >= 60 ? "var(--sev-medium)" : "var(--orange)"; }
@@ -148,6 +151,90 @@
   function icon(name) {
     return h("span", { class: "icon", "aria-hidden": "true" }, svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "#2bb673", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" }, svg("path", { d: ICONS[name] })));
   }
+
+  /* ---------- menus déroulants maison ----------
+     Le <select> natif reste dans la page (valeur, formulaires, événements « change ») mais caché ;
+     un bouton et une liste aux couleurs du site le remplacent à l'écran. Clavier : flèches, Début/Fin,
+     Entrée/Espace, Échap, Tab, et saisie d'une lettre pour aller à l'option correspondante. */
+  var selCount = 0;
+  function chevron() {
+    return svg("svg", { viewBox: "0 0 24 24", width: 18, height: 18, "aria-hidden": "true" },
+      svg("path", { d: "M6 9.5l6 6 6-6", fill: "none", stroke: "currentColor", "stroke-width": 2.8, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+  }
+  function enhanceSelect(sel) {
+    if (sel.dataset.enhanced || sel.multiple) return;
+    sel.dataset.enhanced = "1";
+    var uid = "sel" + (++selCount), wrap = h("div", { class: "sel" }), label = h("span", { class: "sel-label" });
+    var btn = h("button", { type: "button", class: "sel-btn", "aria-haspopup": "listbox", "aria-expanded": "false", "aria-controls": uid + "-list" },
+      label, h("span", { class: "sel-arrow" }, chevron()));
+    var list = h("ul", { class: "sel-list", role: "listbox", id: uid + "-list", tabindex: -1, hidden: true });
+    if (sel.id) { btn.id = sel.id; sel.id = sel.id + "-natif"; }           // les <label for> visent le bouton
+    if (sel.getAttribute("aria-label")) btn.setAttribute("aria-label", sel.getAttribute("aria-label"));
+    if (sel.getAttribute("style")) wrap.setAttribute("style", sel.getAttribute("style"));
+    sel.parentNode.insertBefore(wrap, sel);
+    wrap.append(sel, btn, list);
+    sel.tabIndex = -1; sel.setAttribute("aria-hidden", "true");
+    var active = 0, typed = "", typedAt = 0;
+    function sync() { var o = sel.options[sel.selectedIndex]; label.textContent = o ? o.text : ""; }
+    new MutationObserver(sync).observe(sel, { childList: true, subtree: true, attributes: true, characterData: true });
+    sel.addEventListener("change", sync); sync();
+    function setActive(i) {
+      var opts = list.children; if (!opts.length) return;
+      active = Math.max(0, Math.min(opts.length - 1, i));
+      Array.prototype.forEach.call(opts, function (li, k) { li.classList.toggle("active", k === active); });
+      btn.setAttribute("aria-activedescendant", opts[active].id);
+      opts[active].scrollIntoView({ block: "nearest" });
+    }
+    function open() {
+      if (!list.hidden) return;
+      document.querySelectorAll(".sel.open").forEach(function (w) { if (w !== wrap && w._close) w._close(); });
+      fill(list, Array.prototype.map.call(sel.options, function (o, i) {
+        var li = h("li", { role: "option", id: uid + "-o" + i, class: "sel-opt", "aria-selected": String(i === sel.selectedIndex), style: "--i:" + Math.min(i, 12) },
+          h("span", {}, o.text), i === sel.selectedIndex ? h("span", { class: "sel-check", "aria-hidden": "true" }, "✓") : null);
+        li.addEventListener("mousedown", function (e) { e.preventDefault(); });
+        li.addEventListener("click", function () { choose(i); });
+        li.addEventListener("mousemove", function () { if (active !== i) setActive(i); });
+        return li;
+      }));
+      var rect = btn.getBoundingClientRect();
+      wrap.classList.toggle("up", window.innerHeight - rect.bottom < 300 && rect.top > 300);
+      list.hidden = false; wrap.classList.add("open"); btn.setAttribute("aria-expanded", "true");
+      setActive(Math.max(0, sel.selectedIndex));
+      document.addEventListener("mousedown", outside, true);
+    }
+    function close() {
+      if (list.hidden) return;
+      list.hidden = true; wrap.classList.remove("open"); btn.setAttribute("aria-expanded", "false");
+      btn.removeAttribute("aria-activedescendant");
+      document.removeEventListener("mousedown", outside, true);
+    }
+    wrap._close = close;
+    function outside(e) { if (!wrap.contains(e.target)) close(); }
+    function choose(i) {
+      if (i !== sel.selectedIndex) { sel.selectedIndex = i; sel.dispatchEvent(new Event("change", { bubbles: true })); sel.dispatchEvent(new Event("input", { bubbles: true })); }
+      sync(); close(); btn.focus();
+    }
+    btn.addEventListener("click", function () { if (list.hidden) open(); else close(); });
+    btn.addEventListener("keydown", function (e) {
+      var isOpen = !list.hidden, k = e.key;
+      if (k === "ArrowDown" || k === "ArrowUp") { e.preventDefault(); if (!isOpen) open(); else setActive(active + (k === "ArrowDown" ? 1 : -1)); }
+      else if (k === "Home" || k === "End") { if (isOpen) { e.preventDefault(); setActive(k === "Home" ? 0 : list.children.length - 1); } }
+      else if (k === "Enter" || k === " ") { e.preventDefault(); if (isOpen) choose(active); else open(); }
+      else if (k === "Escape") { if (isOpen) { e.preventDefault(); e.stopPropagation(); close(); } }
+      else if (k === "Tab") close();
+      else if (k.length === 1 && /\S/.test(k)) {
+        var now = Date.now(); typed = (now - typedAt > 700 ? "" : typed) + k.toLowerCase(); typedAt = now;
+        var i = Array.prototype.findIndex.call(sel.options, function (o) { return o.text.toLowerCase().indexOf(typed) === 0; });
+        if (i >= 0) { if (!isOpen) open(); setActive(i); }
+      }
+    });
+  }
+  new MutationObserver(function (records) {
+    records.forEach(function (r) { r.addedNodes.forEach(function (n) {
+      if (n.nodeType !== 1) return;
+      if (n.tagName === "SELECT") enhanceSelect(n); else n.querySelectorAll && n.querySelectorAll("select").forEach(enhanceSelect);
+    }); });
+  }).observe(document.body, { childList: true, subtree: true });
 
   /* ---------- fenêtres ---------- */
   function closeOverlay() { overlay.hidden = true; fill(overlay); }
@@ -559,7 +646,7 @@
     var cfg = { market: false };
     api("/api/keywords/config").then(function (c) {
       cfg = c;
-      fill(country, Object.keys(c.locations).map(function (k) { return h("option", { value: k, selected: k === "2250" }, c.locations[k]); }));
+      fill(country, countryKeys(c.locations).map(function (k) { return h("option", { value: k, selected: k === "2250" }, c.locations[k]); }));
       fill(intro, c.market ? "Volumes de recherche mensuels, difficulté, coût par clic et intention, croisés avec vos positions Search Console."
         : "Idées issues de l'autocomplétion de Google et de vos requêtes Search Console (volumes indisponibles).");
     });
@@ -881,7 +968,7 @@
     var site = d.site, k = d.kpis, comps = d.competitors.slice(1).map(function (c) { return c.domain; });
     var err = h("div");
     var kwIn = h("textarea", { id: "tr-kw", rows: 4, placeholder: "Un mot-clé par ligne\nlogiciel de facturation\nlogiciel facture charpentier", style: "width:100%;border:2px solid var(--ink);border-radius:var(--r-md);padding:14px 18px;font:1rem var(--body)" });
-    var loc = h("select", { id: "tr-loc", "aria-label": "Pays" }, Object.keys(cfg.locations).map(function (c) { return h("option", { value: c }, cfg.locations[c]); }));
+    var loc = h("select", { id: "tr-loc", "aria-label": "Pays" }, countryKeys(cfg.locations).map(function (c) { return h("option", { value: c }, cfg.locations[c]); }));
     var dev = h("select", { id: "tr-dev", "aria-label": "Appareil" }, h("option", { value: "desktop" }, "Ordinateur"), h("option", { value: "mobile" }, "Mobile"));
     var addBtn = h("button", { class: "btn btn-dark", type: "submit" }, "Suivre");
     var addForm = h("form", { class: "card", style: "display:grid;gap:14px", onsubmit: function (e) {
@@ -1026,7 +1113,7 @@
   function viewDomain(domain, loc) {
     loc = loc || "2250";
     var input = h("input", { type: "text", id: "dm-domain", value: domain || "", placeholder: "concurrent.fr", required: true });
-    var country = h("select", { id: "dm-loc", "aria-label": "Pays" }, Object.keys(COUNTRY).map(function (c) { return h("option", { value: c, selected: c === loc }, COUNTRY[c]); }));
+    var country = h("select", { id: "dm-loc", "aria-label": "Pays" }, countryKeys(COUNTRY).map(function (c) { return h("option", { value: c, selected: c === loc }, COUNTRY[c]); }));
     var form = h("form", { class: "card form-row", onsubmit: function (e) {
       e.preventDefault();
       location.hash = "#/domaine/" + encodeURIComponent(input.value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "")) + "?loc=" + country.value;
@@ -1138,23 +1225,93 @@
     return (meta.full_name || meta.name || "").trim();
   }
   function refreshMe() { return api("/api/me").then(function (m) { ME = m; return m; }); }
+  /* ---------- navigation : barre du haut et menu plein écran ---------- */
+  var SECTIONS = [
+    { group: "Audit", items: [["home", "#/", "Projets", "Score, historique et problèmes de vos sites"],
+      ["plan", "#/plan", "Plan d'action", "Ce qu'il faut faire cette semaine, par priorité"]] },
+    { group: "Visibilité Google", items: [["positions", "#/positions", "Positions", "Vos requêtes Search Console et leur analyse"],
+      ["tracking", "#/suivi", "Suivi", "Vos positions chaque jour, face aux concurrents"]] },
+    { group: "Recherche", items: [["keywords", "#/mots-cles", "Mots-clés", "Volumes, difficulté et intention"],
+      ["domain", "#/domaine", "Domaines", "Trafic, mots-clés et backlinks de n'importe quel site"],
+      ["competitors", "#/concurrents", "Concurrents", "Comparaison technique avec vos rivaux"]] }];
+  var ROUTE_SECTION = { site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
+  var currentSection = "home";
+  var menu = document.getElementById("menu"), burger = document.getElementById("burger"), topBar = document.querySelector(".top");
+  var lastFocus = null, menuTimer = null, brandImg = document.querySelector(".brand img");
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function buildMenu() {
+    var n = 0;
+    fill(menu, h("div", { class: "menu-inner" },
+      h("div", { class: "menu-groups" }, SECTIONS.map(function (g) {
+        return h("section", { class: "menu-group" }, h("p", { class: "menu-label", style: "--i:" + (n++) }, g.group),
+          h("ul", {}, g.items.map(function (it) {
+            return h("li", { style: "--i:" + (n++) }, h("a", { class: "menu-item", href: it[1], "aria-current": currentSection === it[0] ? "page" : null },
+              h("span", { class: "menu-title" }, it[2], h("span", { class: "menu-arrow", "aria-hidden": "true" }, "→")), h("span", { class: "menu-desc" }, it[3])));
+          })));
+      })),
+      h("div", { class: "menu-foot", style: "--i:" + (n++) },
+        h("button", { class: "btn btn-green", type: "button", onclick: function () { closeMenu(); newAuditModal(); } }, "Nouvel audit"),
+        h("a", { class: "btn btn-ghost", href: "#/compte" }, "Mon compte" + (ME ? " · offre " + ME.limits.label : "")),
+        h("button", { class: "btn btn-ghost", type: "button", onclick: function () { closeMenu(); sb.auth.signOut(); } }, "Se déconnecter"))));
+  }
+  function openMenu() {
+    clearTimeout(menuTimer);
+    buildMenu();
+    lastFocus = document.activeElement;
+    menu.hidden = false; menu.classList.remove("closing");
+    topBar.classList.add("menu-open"); document.documentElement.classList.add("no-scroll");
+    brandImg.src = "/img/vigie-logo-dark.svg";
+    burger.setAttribute("aria-expanded", "true"); burger.setAttribute("aria-label", "Fermer le menu");
+    requestAnimationFrame(function () { menu.classList.add("open"); });
+    setTimeout(function () { var f = menu.querySelector(".menu-item"); if (f) f.focus(); }, reduceMotion ? 0 : 350);
+  }
+  function closeMenu() {
+    if (menu.hidden) return;
+    menu.classList.remove("open"); menu.classList.add("closing");
+    topBar.classList.remove("menu-open"); document.documentElement.classList.remove("no-scroll");
+    setTimeout(function () { brandImg.src = "/img/vigie-logo-light.svg"; }, reduceMotion ? 0 : 250);
+    burger.setAttribute("aria-expanded", "false"); burger.setAttribute("aria-label", "Ouvrir le menu");
+    menuTimer = setTimeout(function () { menu.hidden = true; menu.classList.remove("closing"); }, reduceMotion ? 0 : 420);
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+  burger.addEventListener("click", function () { if (menu.hidden || menu.classList.contains("closing")) openMenu(); else closeMenu(); });
+  menu.addEventListener("click", function (e) { if (e.target.closest("a.menu-item, a.btn")) closeMenu(); });
+  document.addEventListener("keydown", function (e) {
+    if (menu.hidden) return;
+    if (e.key === "Escape") { closeMenu(); return; }
+    if (e.key === "Tab") {  // le focus reste dans le menu (et sur le bouton qui le ferme)
+      var f = [burger].concat(Array.prototype.slice.call(menu.querySelectorAll("a, button")));
+      var i = f.indexOf(document.activeElement);
+      if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+    }
+  });
+
   function renderTop() {
-    var nav = document.getElementById("nav"), actions = document.getElementById("top-actions");
-    nav.hidden = !SESSION;
-    if (SESSION) fill(actions, h("button", { class: "btn btn-dark", type: "button", onclick: function () { newAuditModal(); } }, "Nouvel audit"),
-      h("a", { class: "btn btn-small", href: "#/compte", "aria-label": "Mon compte" }, "Compte"));
-    else fill(actions, h("button", { class: "btn btn-dark", type: "button", onclick: signIn }, "Se connecter"));
+    var actions = document.getElementById("top-actions"), section = document.getElementById("top-section");
+    burger.hidden = !SESSION; section.hidden = !SESSION;
+    if (SESSION) {
+      var initial = (firstName() || (ME && ME.email) || "?").charAt(0).toUpperCase();
+      fill(actions, h("button", { class: "btn btn-dark top-cta", type: "button", onclick: function () { newAuditModal(); } }, h("span", { "aria-hidden": "true" }, "+ "), "Nouvel audit"),
+        h("a", { class: "avatar", href: "#/compte", "aria-label": "Mon compte", title: "Mon compte" }, initial));
+    } else fill(actions, h("a", { class: "top-link", href: "#/offres" }, "Offres"), h("button", { class: "btn btn-dark", type: "button", onclick: signIn }, "Se connecter"));
+  }
+  function setSection(name) {
+    currentSection = ROUTE_SECTION[name] || name;
+    var item = null;
+    SECTIONS.forEach(function (g) { g.items.forEach(function (it) { if (it[0] === currentSection) item = it; }); });
+    var el = document.getElementById("top-section");
+    if (item) { el.href = item[1]; fill(el, h("span", { class: "dot-live", "aria-hidden": "true" }), item[2]); }
+    else fill(el, h("span", { class: "dot-live", "aria-hidden": "true" }), currentSection === "account" ? "Mon compte" : "Vigie SEO");
   }
   function route() {
     var hash = location.hash.replace(/^#\/?/, ""), qs = new URLSearchParams(hash.split("?")[1] || "");
     var parts = hash.split("?")[0].split("/").map(decodeURIComponent), name = parts[0] || "home";
-    closeOverlay();
+    closeOverlay(); closeMenu();
     window.scrollTo(0, 0);
     if (!SESSION) { viewLanding(name === "offres"); main.focus({ preventScroll: true }); return; }
-    document.querySelectorAll("#nav a").forEach(function (a) {
-      var active = a.dataset.route === ({ site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain" }[name] || name);
-      if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
-    });
+    setSection(name);
     if (name === "site" && parts[1]) viewSite(parts[1]);
     else if (name === "audit" && parts[1]) viewAudit(parts[1]);
     else if (name === "plan") viewPlan(parts[1]);
