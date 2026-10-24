@@ -87,10 +87,12 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
 
     # 1. La marque -------------------------------------------------------------------------------
     brand = brand_of(site)
+    near = []
     if len(brand) >= 3:
         exact = [q for q in queries if brand in _squash(q["query"])]
         tol = 1 if len(brand) <= 5 else 2
-        near = [q for q in queries if q not in exact and any(
+        # variantes et fautes de frappe du nom : recherches courtes (1 ou 2 mots) dont un mot est proche du nom
+        near = [q for q in queries if q not in exact and len(re.findall(r"[a-z0-9]+", _plain(q["query"]))) <= 2 and any(
             len(t) >= 3 and t != brand and _lev(t, brand) <= tol for t in re.findall(r"[a-z0-9]+", _plain(q["query"])))]
         near.sort(key=lambda q: -q["impressions"])
         if exact:
@@ -145,9 +147,14 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                                  for p in (utility[:8] if utility else [])]))
 
     # 3. Presque en page 1 (positions 4 à 15) ----------------------------------------------------
+    # sans les recherches de la marque ni les pages à désindexer, déjà traitées plus haut
+    brand_queries = {q["query"] for q in queries if len(brand) >= 3 and (brand in _squash(q["query"]) or q in near)} \
+        if len(brand) >= 3 else set()
     source = query_pages or [{**q, "page": ""} for q in queries]
     by_page = defaultdict(list)
     for r in source:
+        if r["query"] in brand_queries or (r["page"] and UTILITY_RE.search(_path(r["page"]))):
+            continue
         if 3.5 < r["position"] <= 15:
             by_page[r["page"]].append(r)
     wins = []
