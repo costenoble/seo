@@ -60,9 +60,16 @@ def _fmt_pos(p: float) -> str:
     return f"{p:.1f}".replace(".", ",")
 
 
-def _insight(id_, priority, title, text, action, columns=None, rows=None, chips=None):
+def _insight(id_, priority, title, text, action, columns=None, rows=None, chips=None, targets=None):
+    """targets : éléments concrets à traiter (deviennent des tâches du plan d'action) :
+    {key, title, detail?, pages, queries} — queries sert à mesurer l'effet une fois la tâche faite."""
     return {"id": id_, "priority": priority, "title": title, "text": text, "action": action,
-            "table": {"columns": columns, "rows": rows} if rows else None, "chips": chips or []}
+            "table": {"columns": columns, "rows": rows} if rows else None, "chips": chips or [],
+            "targets": targets or []}
+
+
+def _target(key, title, detail="", pages=(), queries=()):
+    return {"key": key, "title": title, "detail": detail, "pages": list(pages), "queries": list(queries)}
 
 
 def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list[dict],
@@ -114,7 +121,9 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                 out.append(_insight("brand", "high", "Votre marque n'est pas en 1re position", text,
                                     "Créez une fiche Google Business Profile, obtenez des liens vers votre site depuis "
                                     "des annuaires professionnels et vos réseaux sociais (LinkedIn…)." + title_note,
-                                    chips=[q["query"] for q in near[:12]]))
+                                    chips=[q["query"] for q in near[:12]],
+                                    targets=[_target("brand", f"Passer 1er sur « {exact[0]['query']} »", text,
+                                                     queries=[q["query"] for q in exact])]))
             else:
                 out.append(_insight("brand", "good", "Votre marque est bien en 1re position",
                                     f"Position moyenne {_fmt_pos(pos)} sur votre nom ({round(clk)} clics).", ""))
@@ -141,10 +150,17 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                 text.append(f"{len(utility)} page(s) sans intérêt pour la recherche sont indexées "
                             f"({', '.join(_path(p['page']) for p in utility[:4])}).")
                 action.append("Ajoutez-leur une balise noindex (connexion, inscription, compte, panier, recherche interne).")
+            targets = []
+            if problems:
+                targets.append(_target("versions", "Rediriger toutes les versions du site vers une seule (301)",
+                                       text[0], pages=examples))
+            if utility:
+                targets.append(_target("noindex-utility", "Désindexer les pages de connexion et de compte",
+                                       text[-1], pages=[p["page"] for p in utility[:20]]))
             out.append(_insight("technical", "high", "Un problème technique facile à régler", " ".join(text),
                                 " ".join(action), ["Page", "Impressions", "Position"],
                                 [[p["page"], round(p["impressions"]), round(p["position"], 1)]
-                                 for p in (utility[:8] if utility else [])]))
+                                 for p in (utility[:8] if utility else [])], targets=targets))
 
     # 3. Presque en page 1 (positions 4 à 15) ----------------------------------------------------
     # sans les recherches de la marque ni les pages à désindexer, déjà traitées plus haut
@@ -170,9 +186,12 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
         if page and audit_by_url.get(_path(page)):
             todo += f" (l'audit signale : {', '.join(sorted(audit_by_url[_path(page)]))})"
         lo, hi = min(r["position"] for r in rows), max(r["position"] for r in rows)
-        wins.append((imp, [_path(page) if page else rows[0]["query"],
-                           f"{round(lo)} à {round(hi)}" if round(lo) != round(hi) else str(round(lo)),
-                           round(imp), round(clk), ", ".join(r["query"] for r in rows[:5]), todo]))
+        label = _path(page) if page else rows[0]["query"]
+        wins.append((imp, [label, f"{round(lo)} à {round(hi)}" if round(lo) != round(hi) else str(round(lo)),
+                           round(imp), round(clk), ", ".join(r["query"] for r in rows[:5]), todo],
+                     _target("quick:" + label, f"Optimiser {label} (presque en page 1)",
+                             f"Positions {round(lo)} à {round(hi)}, {round(imp)} impressions, {round(clk)} clics. {todo}.",
+                             pages=[page] if page else [], queries=[r["query"] for r in rows])))
     if wins:
         wins.sort(key=lambda w: -w[0])
         out.append(_insight("quick_wins", "high", "Presque en page 1 : des gains rapides",
@@ -180,7 +199,7 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                             "suffire à les faire entrer dans le haut de la page 1, où se font la plupart des clics.",
                             "Commencez par la page qui a le plus d'impressions.",
                             ["Page", "Positions", "Impressions", "Clics", "Requêtes", "À faire"],
-                            [w[1] for w in wins[:6]]))
+                            [w[1] for w in wins[:6]], targets=[w[2] for w in wins[:6]]))
 
     # 4. Proches de la page 2 (positions 15 à 30) ------------------------------------------------
     page_of = {}
@@ -194,7 +213,11 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                             "Une page ou un article dédié à chacune peut suffire à les faire monter.",
                             ["Requête", "Position", "Impressions", "Page actuelle"],
                             [[q["query"], round(q["position"], 1), round(q["impressions"]),
-                              _path(page_of[q["query"]]) if q["query"] in page_of else "–"] for q in near2[:8]]))
+                              _path(page_of[q["query"]]) if q["query"] in page_of else "–"] for q in near2[:8]],
+                            targets=[_target("page2:" + q["query"], f"Créer un contenu dédié à « {q['query']} »",
+                                             f"Position {_fmt_pos(q['position'])}, {round(q['impressions'])} impressions.",
+                                             pages=[page_of[q["query"]]] if q["query"] in page_of else [],
+                                             queries=[q["query"]]) for q in near2[:5]]))
 
     # 5. Gros potentiel : beaucoup d'impressions, très loin ----------------------------------------
     far_source = pages or []
@@ -216,7 +239,12 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                             "FAQ, captures d'écran, témoignages), faites des liens vers elle depuis l'accueil et le blog, "
                             "puis reproduisez la méthode sur les suivantes.",
                             ["Page", "Impressions", "Position"],
-                            [[_path(p["page"]), round(p["impressions"]), round(p["position"])] for p in far[:8]]))
+                            [[_path(p["page"]), round(p["impressions"]), round(p["position"])] for p in far[:8]],
+                            targets=[_target("potential:" + _path(p["page"]), f"Renforcer {_path(p['page'])}",
+                                             f"{round(p['impressions'])} impressions en position {round(p['position'])}.",
+                                             pages=[p["page"]],
+                                             queries=[r["query"] for r in query_pages if r["page"] == p["page"]])
+                                     for p in far[:3]]))
     elif not pages:
         far_q = sorted((q for q in queries if q["position"] > 30 and q["impressions"] >= max(min_imp * 3, 30)),
                        key=lambda q: -q["impressions"])
@@ -236,14 +264,17 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
         imp = sum(r["impressions"] for r in rows)
         paths = {urlsplit(r["page"]).path for r in rows if r["impressions"] >= imp * .2}
         if imp >= min_imp * 2 and len(paths) >= 2:
-            canni.append([q, round(imp), " / ".join(sorted(paths)[:3])])
+            canni.append([q, round(imp), " / ".join(sorted(paths)[:3]), sorted({r["page"] for r in rows})])
     if canni:
         canni.sort(key=lambda r: -r[1])
         out.append(_insight("cannibalization", "low", "Plusieurs pages en concurrence",
                             f"Sur {len(canni)} requête(s), plusieurs de vos pages se partagent les impressions : "
                             "Google hésite et aucune ne monte vraiment.",
                             "Choisissez la page principale pour chaque requête, renforcez-la et faites pointer les autres vers elle.",
-                            ["Requête", "Impressions", "Pages"], canni[:6]))
+                            ["Requête", "Impressions", "Pages"], [c[:3] for c in canni[:6]],
+                            targets=[_target("canni:" + c[0], f"Choisir une page principale pour « {c[0]} »",
+                                             f"{c[1]} impressions partagées entre {c[2]}.", pages=c[3], queries=[c[0]])
+                                     for c in canni[:3]]))
 
     # 7. Évolution sur 28 jours ---------------------------------------------------------------------
     if recent:
@@ -255,7 +286,10 @@ def analyze(site: str, queries: list[dict], query_pages: list[dict], pages: list
                                 f"{len(falls)} requête(s) ont perdu au moins 3 places par rapport aux 4 semaines précédentes.",
                                 "Vérifiez que ces pages n'ont pas changé (titre, contenu, redirection) et regardez qui vous a dépassé.",
                                 ["Requête", "Avant", "Maintenant", "Impressions"],
-                                [[q["query"], q["previous_position"], q["position"], round(q["impressions"])] for q in falls[:6]]))
+                                [[q["query"], q["previous_position"], q["position"], round(q["impressions"])] for q in falls[:6]],
+                                targets=[_target("drop:" + q["query"], f"Comprendre le recul sur « {q['query']} »",
+                                                 f"Position {_fmt_pos(q['previous_position'])} → {_fmt_pos(q['position'])} "
+                                                 "en 4 semaines.", queries=[q["query"]]) for q in falls[:3]]))
 
     out.sort(key=lambda i: PRIORITY_ORDER[i["priority"]])
     return {"overview": overview, "insights": out, "note": None if pages else

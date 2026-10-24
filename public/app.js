@@ -284,7 +284,8 @@
           h("div", { class: "grow" }, h("p", { class: "eyebrow" }, "Projet"), h("h1", { style: "font-size:clamp(2rem,4vw,3rem);word-break:break-word" }, key),
             h("p", { class: "muted" }, fmt(last.pages) + " pages explorées, dont " + fmt(last.indexable) + " indexables · audit du " + fdatetime(last.date)),
             sevs(last.issues_by_severity)),
-          h("div", { class: "form-row" }, h("a", { class: "btn btn-dark", href: "#/audit/" + last.id }, "Voir les problèmes"),
+          h("div", { class: "form-row" }, h("a", { class: "btn btn-dark", href: "#/plan/" + encodeURIComponent(key) }, "Plan d'action"),
+            h("a", { class: "btn", href: "#/audit/" + last.id }, "Voir les problèmes"),
             h("button", { class: "btn", type: "button", onclick: function () { newAuditModal(last.url); } }, "Relancer un audit"))),
         h("section", {}, h("h2", { style: "margin-bottom:20px" }, "Score par catégorie"),
           h("div", { class: "grid", style: "grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr))" }, cats.map(function (c, i) {
@@ -621,6 +622,96 @@
     }).catch(fail);
   }
 
+  /* ---------- vue : plan d'action ---------- */
+  var PRIO_LABEL = { high: "Priorité haute", medium: "À prévoir", low: "À surveiller" };
+  function viewPlan(key) {
+    loading();
+    if (!key) {
+      Promise.all([api("/api/sites"), api("/api/plan")]).then(function (r) {
+        var sites = r[0], open = r[1];
+        if (sites.length === 1) { location.hash = "#/plan/" + encodeURIComponent(sites[0].key); return; }
+        fill(main, h("section", { class: "hero" }, h("p", { class: "eyebrow" }, "Plan d'action"), h("h1", {}, "Que faire cette semaine ?"),
+          h("p", {}, "Les recommandations de vos audits et de la Search Console, transformées en tâches. Cochez ce que vous avez fait : Vigie SEO mesure l'effet.")),
+          sites.length ? h("div", { class: "grid" }, sites.map(function (s, i) {
+            return h("a", { class: "card " + TINTS[i % 6], href: "#/plan/" + encodeURIComponent(s.key) }, h("h3", {}, s.key),
+              h("p", { class: "muted" }, open[s.key] ? open[s.key] + " tâche" + (open[s.key] > 1 ? "s" : "") + " à faire" : "Voir le plan →"));
+          })) : emptyState("Lancez d'abord un audit", "Le plan d'action part de l'audit de votre site et de vos données Search Console.",
+            h("button", { class: "btn btn-dark", type: "button", onclick: function () { newAuditModal(); } }, "Lancer un audit")));
+      }).catch(fail);
+      return;
+    }
+    api("/api/plan/" + encodeURIComponent(key)).then(function (d) { renderPlan(key, d); }).catch(fail);
+  }
+  function renderPlan(key, d) {
+    var state = { status: "todo", source: "" }, list = h("div", { class: "insights" }), pills = h("div", { class: "pills", role: "group", "aria-label": "Statut" });
+    var srcPills = h("div", { class: "pills", role: "group", "aria-label": "Origine" });
+    var todo = d.tasks.filter(function (t) { return t.status === "todo"; }).length, done = d.tasks.filter(function (t) { return t.status === "done"; }).length;
+    function setStatus(t, status) {
+      api("/api/plan/tasks/" + t.id, { status: status }).then(function () { viewPlan(key); }).catch(function (e) { alert(e.message); });
+    }
+    function impactView(t) {
+      var i = t.impact;
+      if (t.status !== "done") return null;
+      if (t.source === "audit") {
+        if (!i) return null;
+        return h("p", { class: "impact good" }, i.count_now === 0 ? "✓ Corrigé : plus aucune page concernée au dernier audit" + (i.resolved_by_audit ? " (fermée automatiquement)" : "")
+          : "Encore " + i.count_now + " page(s) concernée(s) au dernier audit (" + i.count_before + " au départ)");
+      }
+      if (!i) {
+        var days = Math.floor((Date.now() - new Date(t.done_at)) / 864e5);
+        return h("p", { class: "impact" }, "Mesure de l'effet en cours : premiers chiffres 7 jours après (J+" + days + "). Google publie ses données avec 2 jours de décalage.");
+      }
+      var parts = [];
+      if (i.impressions_pct != null) parts.push((i.impressions_pct > 0 ? "+" : "") + i.impressions_pct + " % d'impressions");
+      if (i.clicks_pct != null) parts.push((i.clicks_pct > 0 ? "+" : "") + i.clicks_pct + " % de clics");
+      if (i.position_before && i.position_after) parts.push("position " + fmt(i.position_before, 1) + " → " + fmt(i.position_after, 1));
+      var good = (i.impressions_pct || 0) > 0 || (i.position_before && i.position_after && i.position_after < i.position_before);
+      return h("p", { class: "impact" + (good ? " good" : "") }, (parts.join(", ") || "Pas encore de données sur ces requêtes") +
+        " — " + (i.final ? "sur 4 semaines" : "mesure provisoire, J+" + i.days_after));
+    }
+    function card(t) {
+      var pages = t.pages || [];
+      return h("article", { class: "card insight task " + (t.status === "todo" ? (t.priority === "high" ? "pink" : t.priority === "medium" ? "blue" : "") : "") },
+        h("div", { style: "display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:start" },
+          h("div", {}, h("p", { class: "eyebrow", style: "margin:0 0 6px" }, (t.source === "audit" ? "Audit" : "Search Console") + " · " + (PRIO_LABEL[t.priority] || "")),
+            h("h3", {}, t.title)),
+          h("div", { class: "form-row" },
+            t.status === "todo" ? [h("button", { class: "btn btn-dark btn-small", type: "button", onclick: function () { setStatus(t, "done"); } }, "C'est fait"),
+              h("button", { class: "btn btn-small", type: "button", onclick: function () { setStatus(t, "ignored"); } }, "Ignorer")]
+              : h("button", { class: "btn btn-small", type: "button", onclick: function () { setStatus(t, "todo"); } }, "Rouvrir"))),
+        t.detail ? h("p", {}, t.detail) : null,
+        t.action ? h("p", { class: "insight-action" }, "→ " + t.action) : null,
+        pages.length ? h("details", { class: "pages-list" }, h("summary", {}, pages.length + " page" + (pages.length > 1 ? "s" : "") + " concernée" + (pages.length > 1 ? "s" : "")),
+          h("ul", {}, pages.slice(0, 30).map(function (u) { return h("li", {}, h("a", { class: "url", href: u, target: "_blank", rel: "noopener noreferrer" }, u)); }))) : null,
+        impactView(t));
+    }
+    function draw() {
+      var counts = { todo: 0, done: 0, ignored: 0 };
+      d.tasks.forEach(function (t) { if (!state.source || t.source === state.source) counts[t.status]++; });
+      fill(pills, [["todo", "À faire"], ["done", "Faites"], ["ignored", "Ignorées"]].map(function (v) {
+        return h("button", { class: "pill", type: "button", "aria-pressed": String(state.status === v[0]), onclick: function () { state.status = v[0]; draw(); } }, v[1], h("span", { class: "n" }, counts[v[0]]));
+      }));
+      fill(srcPills, [["", "Tout"], ["audit", "Audit"], ["gsc", "Search Console"]].map(function (v) {
+        return h("button", { class: "pill", type: "button", "aria-pressed": String(state.source === v[0]), onclick: function () { state.source = v[0]; draw(); } }, v[1]);
+      }));
+      var f = d.tasks.filter(function (t) { return t.status === state.status && (!state.source || t.source === state.source); });
+      fill(list, f.length ? f.map(card) : h("div", { class: "card empty" }, h("h3", {}, state.status === "todo" ? "Tout est fait 🎉" : "Rien ici pour l'instant"),
+        h("p", { class: "muted" }, state.status === "todo" ? "Relancez un audit ou importez la Search Console pour de nouvelles recommandations." : "")));
+    }
+    draw();
+    var pct = todo + done ? Math.round(done / (todo + done) * 100) : 0;
+    fill(main, h("a", { class: "crumb", href: "#/plan" }, "← Plan d'action"),
+      h("div", { class: "page-head", style: "margin-top:16px" },
+        h("div", { class: "grow" }, h("p", { class: "eyebrow" }, "Plan d'action"), h("h1", { style: "font-size:clamp(2rem,4vw,3rem)" }, key),
+          h("p", { class: "muted" }, todo + " à faire · " + done + " faite" + (done > 1 ? "s" : "") +
+            (d.audit_date ? " · audit du " + fdate(d.audit_date, true) : " · aucun audit") + (d.properties.length ? " · Search Console : " + d.properties.join(", ") : " · Search Console non importée")),
+          h("div", { style: "max-width:420px" }, progressBar(done, todo + done))),
+        h("div", { class: "form-row" }, h("button", { class: "btn", type: "button", onclick: function () { newAuditModal(key); } }, "Relancer un audit"),
+          d.properties.length ? null : h("a", { class: "btn", href: "#/positions" }, "Importer la Search Console"))),
+      h("div", { style: "display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between;margin-bottom:20px" }, pills, srcPills), list,
+      h("p", { class: "note", style: "margin-top:20px" }, "Progression : " + pct + " %. Les problèmes d'audit corrigés se ferment tout seuls au prochain audit ; pour les tâches Search Console, l'effet est mesuré sur les requêtes concernées, 4 semaines avant et après."));
+  }
+
   /* ---------- vue : compte ---------- */
   function viewAccount() {
     loading();
@@ -685,6 +776,7 @@
     });
     if (name === "site" && parts[1]) viewSite(parts[1]);
     else if (name === "audit" && parts[1]) viewAudit(parts[1]);
+    else if (name === "plan") viewPlan(parts[1]);
     else if (name === "positions") viewPositions(qs.get("google"));
     else if (name === "mots-cles") viewKeywords();
     else if (name === "concurrents") viewCompetitors(parts[1]);

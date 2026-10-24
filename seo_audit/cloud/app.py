@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import time
+from datetime import timedelta
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,6 +20,7 @@ from ..ssrf import check_public_url
 from ..urls import is_http, normalize_url, site_key
 from . import crypto, google
 from .insights import analyze
+from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
 from .config import APP_NAME, Settings
 from .db import Db
@@ -27,6 +29,12 @@ from .plans import PLANS, QuotaError, check_monthly, limits
 log = logging.getLogger(__name__)
 PUBLIC_DIR = Path(__file__).resolve().parents[2] / "public"
 TEMPLATE = Path(__file__).resolve().parents[1] / "report_template.html"
+
+
+def property_site(prop: str) -> str:
+    """Clé de projet d'une propriété Search Console : sc-domain:kompta.pro → kompta.pro."""
+    host = prop.split(":", 1)[1] if prop.startswith("sc-domain:") else prop
+    return site_key(host if "://" in host else "https://" + host)
 
 
 def create_app(settings: Settings | None = None) -> Flask:
@@ -382,9 +390,67 @@ def create_app(settings: Settings | None = None) -> Flask:
         queries = db.positions_summary(user_id(), site, 90)["queries"]
         recent = db.positions_summary(user_id(), site, 28)["queries"]
         query_pages, pages = db.gsc_pages_snapshot(user_id(), site)
-        host = site.split(":", 1)[1] if site.startswith("sc-domain:") else site
-        audit = db.latest_report_for_site(user_id(), site_key(host if "://" in host else "https://" + host))
+        audit = db.latest_report_for_site(user_id(), property_site(site))
         return jsonify(analyze(site, queries, query_pages, pages, audit, recent))
+
+    # -- plan d'action --------------------------------------------------------------------------
+    def _analysis(prop: str, site: str, audit) -> dict:
+        query_pages, pages = db.gsc_pages_snapshot(user_id(), prop)
+        return analyze(prop, db.positions_summary(user_id(), prop, 90)["queries"], query_pages, pages, audit,
+                       db.positions_summary(user_id(), prop, 28)["queries"])
+
+    @app.get("/api/plan")
+    @authed
+    def plan_overview():
+        return jsonify(db.open_task_counts(user_id()))
+
+    @app.get("/api/plan/<site>")
+    @authed
+    def plan(site):
+        """Met à jour le plan (nouvelles recommandations, problèmes d'audit corrigés) puis le renvoie."""
+        report = db.latest_report_for_site(user_id(), site)
+        counts = {}
+        if report:
+            audit_tasks = tasks_from_audit(report)
+            counts = {t["fingerprint"]: t["baseline"]["count"] for t in audit_tasks}
+            db.upsert_tasks(user_id(), site, audit_tasks)
+            db.sync_audit_tasks(user_id(), site, counts, report["finished_at"])
+        props = [p["site"] for p in db.properties(user_id()) if property_site(p["site"]) == site]
+        for prop in props:
+            gsc_tasks = tasks_from_insights(_analysis(prop, site, report))
+            for t in gsc_tasks:
+                t["baseline"]["property"] = prop
+            db.upsert_tasks(user_id(), site, gsc_tasks)
+        tasks = db.list_tasks(user_id(), site)
+        last_dates = {p: db.gsc_last_date(user_id(), p) for p in props}
+        out = []
+        for t in tasks:
+            item = {**t, "id": str(t["id"]), "impact": None,
+                    "created_at": t["created_at"].isoformat(), "done_at": t["done_at"].isoformat() if t["done_at"] else None}
+            if t["status"] == "done" and t["source"] == "audit":
+                item["impact"] = {"count_before": t["baseline"].get("count"), "count_now": counts.get(t["fingerprint"], 0),
+                                  "resolved_by_audit": t["resolved_by"] == "audit"}
+            elif t["status"] == "done" and t["queries"] and t["baseline"].get("property") in last_dates:
+                prop, last = t["baseline"]["property"], last_dates[t["baseline"]["property"]]
+                done = t["done_at"].date()
+                if last and last > done:
+                    before = db.gsc_window(user_id(), prop, t["queries"], done - timedelta(days=28), done - timedelta(days=1))
+                    after = db.gsc_window(user_id(), prop, t["queries"], done + timedelta(days=1),
+                                          min(done + timedelta(days=28), last))
+                    item["impact"] = impact(before, after, (last - done).days)
+            out.append(item)
+        return jsonify(site=site, properties=props, audit_date=report["finished_at"].isoformat() if report else None,
+                       tasks=out)
+
+    @app.post("/api/plan/tasks/<task_id>")
+    @authed
+    def plan_task(task_id):
+        status = body().get("status")
+        if status not in ("todo", "done", "ignored"):
+            abort(400, "Statut invalide")
+        if not db.set_task_status(user_id(), task_id, status):
+            abort(404, "Tâche introuvable")
+        return jsonify(status=status)
 
     # -- mots-clés -------------------------------------------------------------------------------
     @app.post("/api/keywords")

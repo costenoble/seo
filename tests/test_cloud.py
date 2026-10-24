@@ -227,3 +227,46 @@ def test_insights_endpoint(client, pg_dsn, monkeypatch):
     assert {"brand", "technical"} <= ids and data["overview"]["has_pages"]
     _, other = new_user(pg_dsn)
     assert client.get("/api/positions/insights?site=sc-domain:exemple.fr", headers=other).status_code == 404
+
+
+def test_action_plan(client, pg_dsn, site):
+    from datetime import date, timedelta
+    uid, h = new_user(pg_dsn, plan="pro")
+    audit_id, _ = run_audit(client, h, site + "/")
+    plan = client.get("/api/plan/127.0.0.1", headers=h).get_json()
+    fps = {t["fingerprint"]: t for t in plan["tasks"]}
+    assert "audit:missing_title" in fps and "audit:http_4xx" in fps
+    assert fps["audit:missing_title"]["action"].startswith("Rédigez un title")
+    assert all(t["status"] == "todo" for t in plan["tasks"])
+    assert client.get("/api/plan", headers=h).get_json()["127.0.0.1"] == len(plan["tasks"])
+
+    # un nouvel audit où le title manquant est corrigé : la tâche se ferme toute seule
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("""update audit_reports set issues = (select jsonb_agg(i) from jsonb_array_elements(issues) i
+                     where i->>'code' <> 'missing_title') where audit_id=%s""", (audit_id,))
+        c.execute("update audits set finished_at = now() + interval '1 minute' where id=%s", (audit_id,))
+    t = {x["fingerprint"]: x for x in client.get("/api/plan/127.0.0.1", headers=h).get_json()["tasks"]}["audit:missing_title"]
+    assert t["status"] == "done" and t["impact"]["count_now"] == 0 and t["impact"]["resolved_by_audit"]
+
+    # marquer, ignorer, et un autre compte ne peut rien modifier
+    other_id = fps["audit:http_4xx"]["id"]
+    _, bob = new_user(pg_dsn)
+    assert client.post(f"/api/plan/tasks/{other_id}", json={"status": "done"}, headers=bob).status_code == 404
+    assert client.get("/api/plan/127.0.0.1", headers=bob).get_json()["tasks"] == []
+    assert client.post(f"/api/plan/tasks/{other_id}", json={"status": "n'importe"}, headers=h).status_code == 400
+    assert client.post(f"/api/plan/tasks/{other_id}", json={"status": "ignored"}, headers=h).status_code == 200
+
+    # mesure d'impact d'une tâche Search Console : 28 jours avant / après
+    done = date.today() - timedelta(days=12)
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into gsc_properties (user_id, site) values (%s, 'sc-domain:127.0.0.1')", (uid,))
+        for d in range(1, 29):
+            c.execute("insert into gsc_daily values (%s,'sc-domain:127.0.0.1',%s,'tente',0,10,0,20)", (uid, done - timedelta(days=d)))
+        for d in range(1, 11):
+            c.execute("insert into gsc_daily values (%s,'sc-domain:127.0.0.1',%s,'tente',1,20,.05,10)", (uid, done + timedelta(days=d)))
+        c.execute("""insert into tasks (user_id, site, fingerprint, source, priority, title, queries, baseline, status, done_at)
+                     values (%s,'127.0.0.1','gsc:quick:/tente','gsc','high','Optimiser /tente','["tente"]',
+                             '{"property":"sc-domain:127.0.0.1"}','done',%s)""", (uid, done))
+    t = {x["fingerprint"]: x for x in client.get("/api/plan/127.0.0.1", headers=h).get_json()["tasks"]}["gsc:quick:/tente"]
+    assert t["impact"]["impressions_pct"] == 100 and t["impact"]["position_before"] == 20 and t["impact"]["position_after"] == 10
+    assert t["impact"]["final"] is False

@@ -200,3 +200,9 @@ input[type="search"] { min-width: 240px; }
 .table-wrap.inner td, .table-wrap.inner th { padding: 10px; font-size: .9rem; }
 .chips.small .chip { font-size: .85rem; padding: 5px 12px; cursor: default; background: rgba(255,255,255,.7); }
 .chips.small .chip:hover { background: rgba(255,255,255,.7); color: var(--ink); }
+
+/* plan d'action */
+.impact { font: 600 .95rem var(--head); padding: 10px 16px; border-radius: var(--r-md); background: var(--cream); }
+.impact.good { background: #d9f4e6; color: #0b5a33; }
+.pages-list summary { cursor: pointer; font: 600 .9rem var(--head); }
+.pages-list ul { margin: 10px 0 0; padding-left: 18px; font-size: .9rem; display: grid; gap: 4px; }

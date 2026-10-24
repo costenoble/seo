@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from ..competitors import summarize
 from ..engine.pg_store import PgStore
@@ -238,10 +239,80 @@ class Db:
 
     def latest_report_for_site(self, user_id: str, site_key: str) -> dict | None:
         with self.conn() as c:
-            row = c.execute("""SELECT r.issues, r.pages FROM audits a JOIN audit_reports r ON r.audit_id = a.id
+            row = c.execute("""SELECT r.issues, r.pages, a.finished_at FROM audits a JOIN audit_reports r ON r.audit_id = a.id
                                WHERE a.user_id=%s AND a.site=%s AND a.kind='site' AND a.status='done'
                                ORDER BY a.finished_at DESC LIMIT 1""", (user_id, site_key)).fetchone()
         return dict(row) if row else None
+
+    # -- plan d'action ---------------------------------------------------------------------
+    TASK_COLS = "id, site, fingerprint, source, priority, title, detail, action, pages, queries, baseline, " \
+                "status, resolved_by, created_at, done_at"
+
+    def upsert_tasks(self, user_id: str, site: str, tasks: list[dict]) -> None:
+        """Ajoute les nouvelles recommandations ; ne touche pas aux tâches existantes (statut conservé)."""
+        if not tasks:
+            return
+        with self.conn() as c:
+            c.cursor().executemany(
+                """INSERT INTO tasks (user_id, site, fingerprint, source, priority, title, detail, action, pages,
+                                      queries, baseline)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (user_id, site, fingerprint) DO NOTHING""",
+                [(user_id, site, t["fingerprint"], t["source"], t["priority"], t["title"], t["detail"], t["action"],
+                  Jsonb(t["pages"]), Jsonb(t["queries"]), Jsonb(t["baseline"])) for t in tasks])
+
+    def sync_audit_tasks(self, user_id: str, site: str, current: dict, audit_finished_at) -> None:
+        """Ferme les problèmes d'audit disparus au dernier audit, rouvre ceux qui sont revenus.
+        current : {fingerprint: nombre de pages concernées} pour l'audit terminé à audit_finished_at."""
+        with self.conn() as c:
+            c.execute("""UPDATE tasks SET status='done', resolved_by='audit', done_at=%s, updated_at=now()
+                         WHERE user_id=%s AND site=%s AND source='audit' AND status='todo' AND created_at < %s
+                           AND NOT (fingerprint = ANY(%s))""",
+                      (audit_finished_at, user_id, site, audit_finished_at, list(current)))
+            for fp, count in current.items():
+                c.execute("""UPDATE tasks SET status='todo', resolved_by=NULL, done_at=NULL, updated_at=now(),
+                                    baseline = jsonb_set(baseline, '{count}', to_jsonb(%s::int))
+                             WHERE user_id=%s AND site=%s AND fingerprint=%s AND status='done' AND done_at < %s""",
+                          (count, user_id, site, fp, audit_finished_at))
+
+    def list_tasks(self, user_id: str, site: str) -> list[dict]:
+        with self.conn() as c:
+            return c.execute(f"""SELECT {self.TASK_COLS} FROM tasks WHERE user_id=%s AND site=%s
+                                 ORDER BY CASE status WHEN 'todo' THEN 0 WHEN 'done' THEN 1 ELSE 2 END,
+                                          CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at""",
+                             (user_id, site)).fetchall()
+
+    def set_task_status(self, user_id: str, task_id: str, status: str) -> bool:
+        try:
+            with self.conn() as c:
+                return c.execute("""UPDATE tasks SET status=%s, updated_at=now(),
+                                           done_at = CASE WHEN %s = 'done' THEN now() END,
+                                           resolved_by = CASE WHEN %s = 'done' THEN 'user' END
+                                    WHERE id=%s AND user_id=%s""",
+                                 (status, status, status, task_id, user_id)).rowcount == 1
+        except psycopg.errors.InvalidTextRepresentation:
+            return False
+
+    def open_task_counts(self, user_id: str) -> dict:
+        with self.conn() as c:
+            return {r["site"]: r["n"] for r in c.execute(
+                "SELECT site, count(*) n FROM tasks WHERE user_id=%s AND status='todo' GROUP BY site", (user_id,))}
+
+    def gsc_last_date(self, user_id: str, site: str):
+        with self.conn() as c:
+            return c.execute("SELECT max(date) d FROM gsc_daily WHERE user_id=%s AND site=%s", (user_id, site)).fetchone()["d"]
+
+    def gsc_window(self, user_id: str, site: str, queries: list[str], start, end) -> dict:
+        """Totaux sur une période pour un ensemble de requêtes ; days = jours de données disponibles."""
+        with self.conn() as c:
+            r = c.execute("""SELECT count(DISTINCT date) days, coalesce(sum(clicks), 0) clicks,
+                                    coalesce(sum(impressions), 0) impressions,
+                                    sum(position * impressions) / nullif(sum(impressions), 0) position
+                             FROM gsc_daily WHERE user_id=%s AND site=%s AND query = ANY(%s) AND date BETWEEN %s AND %s""",
+                          (user_id, site, queries, start, end)).fetchone()
+            days = c.execute("SELECT count(DISTINCT date) n FROM gsc_daily WHERE user_id=%s AND site=%s AND date BETWEEN %s AND %s",
+                             (user_id, site, start, end)).fetchone()["n"]
+        return {"days": days, "clicks": r["clicks"], "impressions": r["impressions"],
+                "position": round(r["position"], 1) if r["position"] is not None else None}
 
     # -- mots-clés -------------------------------------------------------------------------
     def save_ideas(self, user_id: str, seed: str, ideas: list[tuple[str, str]]) -> None:
