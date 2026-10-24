@@ -403,6 +403,7 @@
       var msg = h("div", { role: "status" });
       if (flash === "ok") fill(msg, h("p", { class: "delta up", style: "padding:10px 16px;margin-bottom:16px" }, "Search Console connectée."));
       if (flash === "erreur") fill(msg, errorBox(new Error("La connexion à la Search Console a échoué. Vérifiez que vous avez coché l'accès à la Search Console.")));
+      if (flash === "refuse") fill(msg, errorBox(new Error("Google a refusé l'accès à la Search Console. Tant que l'application est en test, seuls les comptes ajoutés comme « utilisateurs test » dans Google Cloud peuvent la connecter.")));
       if (!st.connected) {
         fill(main, head, msg, h("div", { class: "card blue", style: "display:grid;gap:14px;justify-items:start" },
           h("h3", {}, "Connectez votre Search Console"),
@@ -679,6 +680,16 @@
       if (next && next !== location.hash) location.hash = next; else if (!was || event === "SIGNED_IN") route();
     });
   }
+
+  // Retour d'une connexion Google refusée (?error=access_denied…) : message clair au lieu d'une page muette.
+  (function oauthError() {
+    var q = new URLSearchParams(location.search), err = q.get("error");
+    if (!err) return;
+    var gsc = sessionStorage.getItem("gsc-connect");
+    sessionStorage.removeItem("gsc-connect");
+    sessionStorage.removeItem("after-login");
+    history.replaceState(null, "", location.pathname + (gsc ? "#/positions?google=" + (err === "access_denied" ? "refuse" : "erreur") : "#/"));
+  })();
 
   window.addEventListener("hashchange", route);
   fetch("/api/config").then(function (r) { return r.json(); }).then(function (c) {
