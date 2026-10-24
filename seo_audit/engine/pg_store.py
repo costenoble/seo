@@ -65,17 +65,22 @@ class PgStore:
                 "SELECT id FROM audits WHERE status IN ('queued','running') ORDER BY created_at")]
 
     def add_pending(self, audit_id, items, max_pages):
-        added = 0
+        """Ajoute les URLs nouvelles en une seule requête (ordre conservé, plafond max_pages respecté)."""
+        if not items:
+            return 0
+        urls, depths = [u for u, _ in items], [d for _, d in items]
         with self._conn() as c:
-            total = c.execute("SELECT count(*) AS n FROM audit_pages WHERE audit_id=%s", (audit_id,)).fetchone()["n"]
-            for url, depth in items:
-                if total >= max_pages:
-                    break
-                cur = c.execute("INSERT INTO audit_pages (audit_id, url, depth) VALUES (%s,%s,%s) "
-                                "ON CONFLICT DO NOTHING", (audit_id, url, depth))
-                added += cur.rowcount
-                total += cur.rowcount
-        return added
+            cur = c.execute("""
+                WITH room AS (SELECT greatest(%s - count(*), 0) AS n FROM audit_pages WHERE audit_id = %s),
+                items AS (SELECT u, d, ord FROM unnest(%s::text[], %s::int[]) WITH ORDINALITY AS t(u, d, ord)),
+                first_seen AS (SELECT DISTINCT ON (u) u, d, ord FROM items ORDER BY u, ord),
+                fresh AS (SELECT f.u, f.d, f.ord FROM first_seen f
+                          WHERE NOT EXISTS (SELECT 1 FROM audit_pages p WHERE p.audit_id = %s AND p.url = f.u)
+                          ORDER BY f.ord LIMIT (SELECT n FROM room))
+                INSERT INTO audit_pages (audit_id, url, depth)
+                SELECT %s, u, d FROM fresh ORDER BY ord
+                ON CONFLICT DO NOTHING""", (max_pages, audit_id, urls, depths, audit_id, audit_id))
+            return cur.rowcount
 
     def claim_pending(self, audit_id, limit):
         with self._conn() as c:
