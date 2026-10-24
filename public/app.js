@@ -246,7 +246,7 @@
     loading();
     api("/api/sites").then(function (sites) {
       var hero = h("section", { class: "hero" }, h("p", { class: "eyebrow" }, "Vos projets"),
-        h("h1", { style: "font-size:clamp(2rem,4vw,3rem)" }, "Bonjour" + (ME && ME.email ? ", " + ME.email.split("@")[0] : "") + "."),
+        h("h1", { style: "font-size:clamp(2rem,4vw,3rem)" }, "Bonjour" + (firstName() ? ", " + firstName() : "") + "."),
         h("div", { class: "actions" }, h("button", { class: "btn btn-dark", type: "button", onclick: function () { newAuditModal(); } }, "Analyser un site"),
           h("a", { class: "btn", href: "#/positions" }, "Suivre mes positions")));
       var body;
@@ -598,8 +598,8 @@
       }
       var confirmIn = h("input", { type: "text", id: "del-confirm", placeholder: "SUPPRIMER", autocomplete: "off" }), delErr = h("div");
       fill(main,
-        h("section", { class: "hero", style: "margin-bottom:28px" }, h("p", { class: "eyebrow" }, "Mon compte"), h("h1", { style: "font-size:clamp(2rem,4vw,3rem)" }, ME.email || "Mon compte"),
-          h("p", {}, "Offre " + L.label + (ME.running ? " · " + ME.running + " audit(s) en cours" : ""))),
+        h("section", { class: "hero", style: "margin-bottom:28px" }, h("p", { class: "eyebrow" }, "Mon compte"), h("h1", { style: "font-size:clamp(2rem,4vw,3rem)" }, fullName() || ME.email || "Mon compte"),
+          h("p", {}, (fullName() && ME.email ? ME.email + " · " : "") + "Offre " + L.label + (ME.running ? " · " + ME.running + " audit(s) en cours" : ""))),
         h("div", { class: "grid" },
           h("div", { class: "card", style: "display:grid;gap:18px" }, h("h3", {}, "Consommation ce mois-ci"),
             meter("Audits", U.audit, L.audits_month), meter("Analyses de concurrents", U.competitor, L.competitors_month), meter("Recherches de mots-clés", U.keywords, L.keywords_month),
@@ -620,6 +620,17 @@
   }
 
   /* ---------- session et routage ---------- */
+  // Prénom fourni par Google (via Supabase), sinon la partie de l'e-mail avant le @.
+  function firstName() {
+    var meta = (SESSION && SESSION.user && SESSION.user.user_metadata) || {};
+    var full = meta.full_name || meta.name || "";
+    if (full) return full.trim().split(/\s+/)[0];
+    return ME && ME.email ? ME.email.split("@")[0] : "";
+  }
+  function fullName() {
+    var meta = (SESSION && SESSION.user && SESSION.user.user_metadata) || {};
+    return (meta.full_name || meta.name || "").trim();
+  }
   function refreshMe() { return api("/api/me").then(function (m) { ME = m; return m; }); }
   function renderTop() {
     var nav = document.getElementById("nav"), actions = document.getElementById("top-actions");
