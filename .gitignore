@@ -12,3 +12,5 @@ data/
 .DS_Store
 client_secret*.json
 oauth_client.json
+.vercel
+.env*.local
