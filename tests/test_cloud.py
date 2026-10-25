@@ -36,15 +36,26 @@ def client(pg_dsn):
     return cloud_app.create_app(settings(pg_dsn)).test_client()
 
 
-def new_user(pg_dsn, plan=None):
+def new_user(pg_dsn, plan=None, aal="aal1"):
     uid = str(uuid.uuid4())
     with psycopg.connect(pg_dsn) as c:
         c.execute("insert into auth.users values (%s, %s)", (uid, f"{uid[:8]}@exemple.fr"))
         if plan:
             c.execute("update profiles set plan=%s where user_id=%s", (plan, uid))
     token = jwt.encode({"sub": uid, "email": f"{uid[:8]}@exemple.fr", "aud": "authenticated",
-                        "iss": f"{SUPA}/auth/v1", "exp": int(time.time()) + 3600}, SECRET, algorithm="HS256")
+                        "iss": f"{SUPA}/auth/v1", "exp": int(time.time()) + 3600, "aal": aal}, SECRET, algorithm="HS256")
     return uid, {"Authorization": f"Bearer {token}"}
+
+
+def connect_google(client, headers, monkeypatch, refresh_token):
+    """Parcours de connexion Search Console : URL Google signée, puis retour de Google sur /api/google/callback."""
+    from urllib.parse import parse_qs, urlsplit
+    monkeypatch.setattr(google, "exchange_code", lambda code, cid, cs, uri: {"refresh_token": refresh_token, "email": "moi@gmail.com"})
+    url = client.get("/api/google/connect-url", headers=headers).get_json()["url"]
+    q = parse_qs(urlsplit(url).query)
+    assert "webmasters.readonly" in q["scope"][0] and q["access_type"] == ["offline"] and q["redirect_uri"][0].endswith("/api/google/callback")
+    r = client.get(f"/api/google/callback?state={q['state'][0]}&code=abc")
+    assert r.status_code == 302 and r.headers["Location"].endswith("google=ok")
 
 
 def run_audit(client, headers, url, path="/api/audits", body=None):
@@ -152,7 +163,7 @@ def test_google_search_console(client, pg_dsn, monkeypatch):
         raise google.GoogleError("Quota Google dépassé")
     monkeypatch.setattr(google, "search_analytics_by", pages_down)  # l'import doit réussir quand même
     assert client.get("/api/google/sites", headers=h).status_code == 409  # pas encore connecté
-    assert client.post("/api/google/token", json={"refresh_token": "rt-secret"}, headers=h).status_code == 200
+    connect_google(client, h, monkeypatch, "rt-secret")
     with psycopg.connect(pg_dsn) as c:
         stored = c.execute("select refresh_token_enc from google_tokens where user_id=%s", (uid,)).fetchone()[0]
     assert "rt-secret" not in stored  # chiffré
@@ -218,7 +229,7 @@ def test_insights_endpoint(client, pg_dsn, monkeypatch):
                     {"page": "http://exemple.fr/", "clicks": 0, "impressions": 20, "position": 8.0}]
         return [{"query": "exemple", "page": "https://exemple.fr/", "clicks": 5, "impressions": 200, "position": 4.0}]
     monkeypatch.setattr(google, "search_analytics_by", by)
-    client.post("/api/google/token", json={"refresh_token": "rt"}, headers=h)
+    connect_google(client, h, monkeypatch, "rt")
     assert client.get("/api/positions/insights?site=sc-domain:exemple.fr", headers=h).status_code == 404  # pas suivie
     r = client.post("/api/positions/sync", json={"site": "sc-domain:exemple.fr", "days": 30}, headers=h).get_json()
     assert r["done"] and r["pages"]
@@ -552,3 +563,28 @@ def test_delete_project_tracking_and_property(client, pg_dsn, site):
     with psycopg.connect(pg_dsn) as c:
         assert c.execute("select count(*) from gsc_daily where user_id=%s", (uid,)).fetchone()[0] == 0
         assert c.execute("select count(*) from rank_keywords where user_id=%s", (uid,)).fetchone()[0] == 0
+
+
+def test_google_callback_rejects_forged_or_refused(client, pg_dsn, monkeypatch):
+    uid, h = new_user(pg_dsn)
+    assert "google=expire" in client.get("/api/google/callback?state=faux&code=x").headers["Location"]
+    forged = f"{uid}.{int(time.time()) + 600}.abcd.signaturebidon"
+    assert "google=expire" in client.get(f"/api/google/callback?state={forged}&code=x").headers["Location"]
+    from urllib.parse import parse_qs, urlsplit
+    state = parse_qs(urlsplit(client.get("/api/google/connect-url", headers=h).get_json()["url"]).query)["state"][0]
+    assert "google=refuse" in client.get(f"/api/google/callback?state={state}&error=access_denied").headers["Location"]
+    assert client.get("/api/google/status", headers=h).get_json()["connected"] is False
+
+
+def test_two_factor_enforced_by_server(client, pg_dsn):
+    uid, h = new_user(pg_dsn)
+    assert client.get("/api/sites", headers=h).status_code == 200
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into auth.mfa_factors (user_id, status) values (%s, 'verified')", (uid,))
+    r = client.get("/api/sites", headers=h)                     # session sans le code : refusée
+    assert r.status_code == 401 and r.get_json()["mfa_required"]
+    import jwt as _jwt
+    aal2 = _jwt.encode({"sub": uid, "aud": "authenticated", "iss": f"{SUPA}/auth/v1", "exp": int(time.time()) + 600, "aal": "aal2"},
+                       SECRET, algorithm="HS256")
+    ok = client.get("/api/me", headers={"Authorization": f"Bearer {aal2}"})
+    assert ok.status_code == 200 and ok.get_json()["mfa"] is True

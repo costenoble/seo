@@ -6,7 +6,7 @@
     performance: "Performance", technique: "Technique", international: "International", donnees: "Données structurées" };
   var TINTS = ["blue", "pink", "", "blue", "pink", ""];
   var main = document.getElementById("main"), overlay = document.getElementById("overlay");
-  var CONFIG = null, sb = null, SESSION = null, ME = null;
+  var CONFIG = null, sb = null, SESSION = null, ME = null, MFA_PENDING = false, RECOVERY = false;
 
   /* ---------- utilitaires ---------- */
   // Tout contenu venant d'un site exploré passe par textContent : jamais d'innerHTML avec des données.
@@ -46,11 +46,11 @@
   function countUp(root) {
     if (REDUCED || !root.querySelectorAll) return;
     root.querySelectorAll(".kpi .v, .ring .v, .price").forEach(function (el) {
-      if (el.dataset.counted) return;
+      if (el.dataset.counted || el.closest(".rv:not(.in)")) return;  // les chiffres pas encore à l'écran attendent leur apparition
       el.dataset.counted = "1";
       var first = el.firstChild;
       if (!first || first.nodeType !== 3) return;
-      var m = first.nodeValue.match(/^(\D*?)(-?\d[\d\s\u202f\u00a0]*(?:,\d+)?)(.*)$/);
+      var m = first.nodeValue.match(/^(\D*?)(-?\d+(?:[\s\u202f\u00a0]\d{3})*(?:,\d+)?)(.*)$/);
       if (!m) return;
       var target = parseFloat(m[2].replace(/[\s\u202f\u00a0]/g, "").replace(",", "."));
       if (!isFinite(target) || target === 0) return;
@@ -81,7 +81,7 @@
     if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
     return fetch(path, opts).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (d) {
-        if (r.status === 401 && SESSION) { sb.auth.signOut(); }
+        if (r.status === 401 && SESSION) { if (d.mfa_required) { MFA_PENDING = true; renderTop(); viewMfaChallenge(); } else sb.auth.signOut(); }
         if (!r.ok) { var e = new Error(d.error || ("Erreur " + r.status)); e.status = r.status; e.data = d; throw e; }
         return d;
       });
@@ -392,8 +392,10 @@
   }
 
   /* ---------- page publique ---------- */
-  function signIn() {
-    sessionStorage.setItem("after-login", location.hash && location.hash !== "#/offres" ? location.hash : "#/");
+  function signIn(mode) { location.hash = mode === "signup" ? "#/inscription" : "#/connexion"; }
+  function signUp() { signIn("signup"); }
+  function googleSignIn() {
+    sessionStorage.setItem("after-login", "#/");
     sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + "/" } });
   }
   function plansGrid(current) {
@@ -410,7 +412,7 @@
           h("li", {}, fmt(p.keywords_month) + " recherches de mots-clés par mois"), h("li", {}, fmt(p.tracked_keywords) + " mots-clés suivis chaque jour"), h("li", {}, fmt(p.domains_month) + " analyses de domaines par mois"), h("li", {}, fmt(p.competitors_month) + " analyses de concurrents par mois")),
         current === k ? h("span", { class: "btn btn-small", "aria-disabled": "true" }, "Votre offre actuelle")
           : current ? h("a", { class: "btn btn-small" + (featured ? " btn-green" : ""), href: "mailto:contact@vigieseo.fr?subject=" + encodeURIComponent("Passer à l'offre " + p.label) }, p.price ? "Passer à " + p.label : "Revenir au gratuit")
-            : h("button", { class: "btn " + (featured ? "btn-green" : "btn-dark"), type: "button", onclick: signIn }, p.price ? "Essayer gratuitement" : "Commencer"));
+            : h("button", { class: "btn " + (featured ? "btn-green" : "btn-dark"), type: "button", onclick: signUp }, p.price ? "Essayer gratuitement" : "Commencer"));
     }));
   }
   /* Démo vivante de la page d'accueil : un mini tableau de bord qui se joue en boucle. */
@@ -484,34 +486,135 @@
     fill(foot, h("div", { class: "bigfoot" },
       h("div", { class: "bigfoot-cta" }, h("h2", {}, "Prêt à garder un œil sur votre site ?"),
         h("p", {}, "Premier audit en quelques minutes. Gratuit, sans carte bancaire."),
-        h("button", { class: "btn btn-green", type: "button", onclick: signIn }, "Commencer gratuitement")),
+        h("button", { class: "btn btn-green", type: "button", onclick: signUp }, "Commencer gratuitement")),
       h("div", { class: "bigfoot-cols" },
         col("Produit", [["Audit technique", "#/"], ["Suivi des positions", "#/"], ["Mots-clés et domaines", "#/"], ["Offres", "#/offres"]]),
-        col("Ressources", [["Se connecter", "#/", function (e) { e.preventDefault(); signIn(); }], ["Contact", "mailto:vigieseo@cstlab.dev"]]),
+        col("Ressources", [["Se connecter", "#/connexion"], ["Créer un compte", "#/inscription"], ["Contact", "mailto:vigieseo@cstlab.dev"]]),
         col("Légal", [["Confidentialité", "/confidentialite.html"]])),
       h("div", { class: "bigfoot-bottom" }, h("span", { class: "bigfoot-brand" }, eyeMark(34), h("b", {}, "vigie "), h("b", { class: "g" }, "seo")),
         h("span", {}, "© " + new Date().getFullYear() + " Vigie SEO · Fait en France"))));
   }
 
+  // Apparitions au défilement : les éléments .rv reçoivent .in quand ils entrent à l'écran.
+  function reveal(root) {
+    var els = root.querySelectorAll(".rv");
+    if (REDUCED || !window.IntersectionObserver) { els.forEach(function (e) { e.classList.add("in"); }); return; }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add("in"); io.unobserve(en.target); countUp(en.target); } });
+    }, { threshold: .18, rootMargin: "0px 0px -40px 0px" });
+    els.forEach(function (e) { io.observe(e); });
+  }
+  function rv(el, delay) { el.classList.add("rv"); if (delay) el.style.setProperty("--d", delay + "ms"); return el; }
+  // Inclinaison 3D légère d'une carte sous la souris
+  function tilt(el) {
+    if (REDUCED) return el;
+    el.addEventListener("mousemove", function (e) {
+      var r = el.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+      el.style.transform = "perspective(900px) rotateY(" + (x * 8).toFixed(2) + "deg) rotateX(" + (-y * 8).toFixed(2) + "deg)";
+    });
+    el.addEventListener("mouseleave", function () { el.style.transform = ""; });
+    return el;
+  }
+
+  // Mini illustrations animées des fonctionnalités (démarrent quand la section apparaît)
+  function illusAudit() {
+    var items = ["Erreurs 404 et redirections", "Titles et meta descriptions", "Balises canonical et noindex", "Hreflang et données structurées", "Contenus dupliqués", "Vitesse du serveur"];
+    return h("div", { class: "il il-audit" }, h("div", { class: "il-head" }, h("b", {}, "Audit en cours"), h("span", { class: "il-count" }, "45 contrôles")),
+      h("ul", {}, items.map(function (t, i) { return h("li", { style: "--i:" + i }, h("span", { class: "il-check" }, "✓"), t); })));
+  }
+  function illusPlan() {
+    var tasks = [["Rediriger http vers https", "Priorité haute"], ["Optimiser /blog/b2brouter", "Presque en page 1"], ["Raccourcir 27 titles", "À prévoir"]];
+    return h("div", { class: "il il-plan" }, tasks.map(function (t, i) {
+      return h("div", { class: "il-task", style: "--i:" + i }, h("span", { class: "il-box" }), h("div", {}, h("b", {}, t[0]), h("span", { class: "muted" }, t[1])));
+    }), h("div", { class: "il-impact" }, "▲ +40 % d'impressions après correction"));
+  }
+  function illusRank() {
+    var rows = [["concurrent-a.fr", 1], ["concurrent-b.com", 2], ["votre-site.fr", 3, true], ["annuaire.fr", 4], ["blog-pro.fr", 5]];
+    return h("div", { class: "il il-rank" }, h("div", { class: "il-search" }, "🔍 logiciel facture artisan"),
+      h("ol", {}, rows.map(function (r) {
+        return h("li", { class: r[2] ? "me" : "", style: "--p:" + (r[1] - 1) }, h("span", { class: "il-dot" }), r[0], r[2] ? h("span", { class: "il-climb" }, "▲ 3 → 1") : null);
+      })));
+  }
+  function illusKeywords() {
+    var kws = [["logiciel facturation", 90, "60"], ["devis artisan", 64, "28"], ["facture électronique", 52, "62"], ["logiciel devis gratuit", 38, "15"]];
+    return h("div", { class: "il il-kw" }, kws.map(function (k, i) {
+      var bar = h("span", { class: "il-bar" }); bar.style.setProperty("--w", k[1] + "%");
+      return h("div", { class: "il-kwrow", style: "--i:" + i }, h("span", { class: "il-kwname" }, k[0]), h("span", { class: "il-bartrack" }, bar), kdBadge(+k[2]));
+    }));
+  }
+  function illusMail() {
+    return h("div", { class: "il il-mail" }, h("span", { class: "il-bell" }, "🔔"),
+      h("div", { class: "il-envelope" }, h("b", {}, "Votre semaine SEO"), h("span", {}, "3 actions prioritaires · score 96/100 ▲ · 145 impressions ▲ 22 %")),
+      h("div", { class: "il-alert" }, "⚠ « logiciel devis » sort du top 10"));
+  }
+
+  var FAQ = [
+    ["Vigie SEO, c'est quoi exactement ?", "Un outil qui explore votre site comme Google, repère ce qui freine son référencement, suit vos positions et vous dit quoi faire, par ordre de priorité. Vous cochez ce que vous avez corrigé et Vigie SEO mesure l'effet."],
+    ["Est-ce vraiment gratuit ?", "Oui : l'offre Gratuit permet 5 audits par mois de 100 pages, une propriété Search Console et 10 mots-clés suivis, sans carte bancaire et sans limite de durée. Les offres Pro et Agence augmentent ces limites."],
+    ["Faut-il des connaissances techniques ?", "Non. Chaque problème est expliqué simplement, avec l'action concrète à mener et les pages concernées. Si votre site est géré par un prestataire, vous pouvez lui transmettre le plan d'action ou les exports CSV."],
+    ["Comment Vigie SEO explore-t-il mon site ?", "Comme un moteur de recherche : il suit les liens et le sitemap, respecte votre fichier robots.txt et ne lit que les pages publiques. Il n'a besoin d'aucun accès à votre hébergement."],
+    ["Que fait Vigie SEO avec ma Search Console ?", "Il lit vos données en lecture seule pour analyser vos requêtes et vos positions. L'accès est chiffré, il peut être coupé en un clic depuis la page Connexions, et Vigie SEO ne peut rien modifier chez Google."],
+    ["Où sont hébergées mes données ?", "Dans l'Union européenne, à Stockholm (base de données et serveurs de calcul). Elles ne sont ni revendues ni utilisées pour de la publicité."],
+    ["En quoi est-ce différent des grands outils SEO ?", "Les outils classiques vous donnent des tableaux de données, souvent en anglais et pour plus de 100 € par mois. Vigie SEO part de vos vraies données Google pour vous dire quoi faire cette semaine, en français, dès 0 €."],
+    ["Puis-je l'utiliser pour les sites de mes clients ?", "Oui : l'offre Agence est pensée pour suivre de nombreux sites, avec des quotas élevés. Les rapports à votre logo et l'accès pour vos clients arrivent bientôt."],
+    ["Mon compte est-il bien protégé ?", "Oui : mot de passe chiffré, double authentification (code à 6 chiffres) activable en un clic, et jetons d'accès Google chiffrés en base."],
+    ["Puis-je supprimer mes données ?", "À tout moment : chaque projet se supprime individuellement, et la suppression du compte efface toutes vos données et révoque l'accès à votre Search Console."]];
+
+  function faqItem(q, a, i) {
+    var id = "faq-" + i, btn = h("button", { class: "faq-q", type: "button", "aria-expanded": "false", "aria-controls": id }, q, h("span", { class: "faq-plus", "aria-hidden": "true" }));
+    var panel = h("div", { class: "faq-a", id: id, role: "region" }, h("div", {}, h("p", {}, a)));
+    btn.addEventListener("click", function () { var open = btn.getAttribute("aria-expanded") === "true"; btn.setAttribute("aria-expanded", String(!open)); panel.classList.toggle("open", !open); });
+    return rv(h("div", { class: "faq-item" }, btn, panel), i * 50);
+  }
+
   function viewLanding(scrollToOffers) {
+    var marqueeItems = ["Audit technique", "Search Console", "Suivi quotidien des positions", "Recherche de mots-clés", "Analyse de domaines", "Backlinks", "Plan d'action", "Alertes par e-mail", "Données en Europe", "Double authentification"];
+    function marqueeRow() { return h("div", { class: "marquee-row" }, marqueeItems.map(function (t) { return [h("span", {}, t), eyeMark(22, "marquee-eye")]; })); }
     var feats = [
-      ["audit", "Audit technique complet", "Une quarantaine de contrôles : erreurs, redirections, indexabilité, balises, hreflang, données structurées, contenus dupliqués.", "blue"],
-      ["chart", "Suivi de vos positions", "Vos requêtes Search Console importées chaque jour : clics, impressions, position et tendances.", "pink"],
-      ["search", "Idées de mots-clés", "Suggestions, questions et variantes réellement tapées par les internautes, croisées avec vos requêtes.", ""],
-      ["users", "Face à vos concurrents", "Comparez balises, contenu, données structurées et temps de réponse avec les sites qui vous devancent.", "blue"]];
+      ["Audit technique", "Une quarantaine de contrôles, du 404 au hreflang.", "Vigie SEO explore votre site comme Google et classe chaque problème par gravité : erreurs, redirections, indexabilité, balises, données structurées, contenus dupliqués. Chaque audit est comparé au précédent.", illusAudit, "blue"],
+      ["Plan d'action", "Ce qu'il faut faire cette semaine, et la preuve que ça marche.", "Les problèmes de l'audit et les opportunités de la Search Console deviennent des tâches. Cochez ce que vous avez fait : Vigie SEO mesure l'effet sur vos impressions, vos clics et vos positions.", illusPlan, "pink"],
+      ["Suivi des positions", "Votre place sur Google, chaque jour, face à vos concurrents.", "Choisissez vos mots-clés, par pays et sur mobile ou ordinateur. Visibilité, top 10, évolutions sur 7 jours et concurrents qui vous doublent : rien ne vous échappe.", illusRank, "mint"],
+      ["Mots-clés et domaines", "Ce que cherchent vos clients, et ce que font vos concurrents.", "Volumes de recherche, difficulté, coût par clic et intention. Analysez n'importe quel site : trafic estimé, mots-clés, backlinks, et les mots-clés où vos concurrents sont présents et pas vous.", illusKeywords, "blue"],
+      ["Alertes et résumé", "Vigie SEO veille quand vous ne regardez pas.", "Un résumé chaque lundi matin, et une alerte quand un score baisse, qu'une erreur grave apparaît ou qu'un mot-clé sort du top 10. Et une bonne nouvelle quand il y entre.", illusMail, "pink"]];
+    var steps = [["1", "Ajoutez votre site", "Tapez son adresse. Pas de code à installer, pas d'accès à votre hébergement."],
+      ["2", "Vigie SEO l'analyse", "Exploration, contrôles techniques, et vos données Search Console si vous les connectez."],
+      ["3", "Suivez le plan", "Des actions claires par priorité, cochées au fur et à mesure, avec la mesure de leur effet."]];
+    var compare = [["Prix", "Dès 0 €, sans carte", "Souvent plus de 100 € par mois"], ["Ce qu'il faut faire, par priorité", "✓", "Tableaux à interpréter"],
+      ["Vos vraies données Google (Search Console)", "✓", "Surtout des estimations"], ["Mesure de l'effet de vos corrections", "✓", "✗"],
+      ["100 % en français", "✓", "Souvent en anglais"], ["Prise en main", "5 minutes", "Formation conseillée"]];
+    var demo = tilt(liveDemo());
     fill(main,
       h("section", { class: "landing-hero" },
         h("div", { class: "hero" }, h("p", { class: "eyebrow" }, "Audit et suivi SEO"),
-          h("h1", {}, "Gardez un œil sur la santé de vos sites."),
+          h("h1", { class: "hero-title" }, h("span", { class: "w" }, "Gardez"), " ", h("span", { class: "w" }, "un"), " ", h("span", { class: "w" }, "œil"), " ", h("span", { class: "w" }, "sur"), " ",
+            h("span", { class: "w" }, "la"), " ", h("span", { class: "w" }, "santé"), " ", h("span", { class: "w" }, "de"), " ", h("span", { class: "w" }, "vos"), " ", h("span", { class: "w hl" }, "sites.")),
           h("p", {}, "Vigie SEO explore votre site, repère ce qui freine son référencement et suit vos positions Google, audit après audit."),
-          h("div", { class: "actions" }, h("button", { class: "btn btn-dark", type: "button", onclick: signIn }, "Commencer gratuitement"),
+          h("div", { class: "actions" }, h("button", { class: "btn btn-dark", type: "button", onclick: signUp }, "Commencer gratuitement"),
             h("a", { class: "btn", href: "#/offres" }, "Voir les offres")),
-          h("p", { class: "note" }, "Connexion avec votre compte Google. Sans carte bancaire.")),
-        liveDemo()),
-      h("section", {}, h("h2", { style: "margin-bottom:22px" }, "Tout ce qu'il faut pour progresser"),
-        h("div", { class: "features" }, feats.map(function (f) { return h("div", { class: "card " + f[3] }, icon(f[0]), h("h3", {}, f[1]), h("p", {}, f[2])); }))),
-      h("section", { class: "section", id: "offres" }, h("h2", { style: "margin-bottom:22px" }, "Des offres simples"), plansGrid(null)));
-    if (scrollToOffers) setTimeout(function () { document.getElementById("offres").scrollIntoView(); }, 50);
+          h("p", { class: "note" }, "Inscription en 30 secondes, par e-mail ou avec Google. Sans carte bancaire.")),
+        demo),
+      h("div", { class: "marquee", "aria-hidden": "true" }, h("div", { class: "marquee-track" }, marqueeRow(), marqueeRow())),
+      h("section", { class: "section steps-sec" }, rv(h("p", { class: "eyebrow" }, "Comment ça marche")), rv(h("h2", { class: "big" }, "Trois étapes, zéro prise de tête."), 80),
+        h("div", { class: "steps" }, h("div", { class: "steps-line rv" }), steps.map(function (st, i) {
+          return rv(h("div", { class: "step card" }, h("span", { class: "step-n" }, st[0]), h("h3", {}, st[1]), h("p", { class: "muted" }, st[2])), 150 + i * 140);
+        }))),
+      h("section", { class: "section" }, rv(h("p", { class: "eyebrow" }, "Fonctionnalités")), rv(h("h2", { class: "big" }, "Tout ce qu'il faut pour progresser."), 80),
+        h("div", { class: "feat-rows" }, feats.map(function (f, i) {
+          return h("div", { class: "feat-row" + (i % 2 ? " rev" : "") },
+            rv(h("div", { class: "feat-text" }, h("span", { class: "feat-tag" }, f[0]), h("h3", {}, f[1]), h("p", {}, f[2]))),
+            rv(h("div", { class: "feat-art card " + f[4] }, f[3]()), 120));
+        }))),
+      h("section", { class: "stats rv" }, [["45", "contrôles techniques"], ["4", "pays : France, Belgique, Suisse, Canada"], ["24 h", "entre deux relevés de positions"], ["0 €", "pour commencer"]].map(function (st, i) {
+        return h("div", { class: "stat", style: "--i:" + i }, h("span", { class: "kpi" }, h("span", { class: "v" }, st[0])), h("p", {}, st[1]));
+      })),
+      h("section", { class: "section" }, rv(h("p", { class: "eyebrow" }, "Comparaison")), rv(h("h2", { class: "big" }, "Pensé pour agir, pas pour vous noyer."), 80),
+        rv(h("div", { class: "table-wrap compare" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", { class: "us" }, "Vigie SEO"), h("th", {}, "Outils SEO classiques"))),
+          h("tbody", {}, compare.map(function (r, i) { return h("tr", { style: "--i:" + i }, h("td", {}, r[0]), h("td", { class: "us" }, h("b", {}, r[1])), h("td", { class: "muted" }, r[2])); })))), 120)),
+      h("section", { class: "section", id: "offres" }, rv(h("p", { class: "eyebrow" }, "Offres")), rv(h("h2", { class: "big" }, "Des offres simples, sans engagement."), 80), rv(plansGrid(null), 140)),
+      h("section", { class: "section faq-sec" }, rv(h("p", { class: "eyebrow" }, "Questions fréquentes")), rv(h("h2", { class: "big" }, "Vous vous demandez sûrement…"), 80),
+        h("div", { class: "faq" }, FAQ.map(function (f, i) { return faqItem(f[0], f[1], i); }))));
+    reveal(main);
+    if (scrollToOffers) setTimeout(function () { document.getElementById("offres").scrollIntoView({ behavior: "smooth" }); }, 80);
   }
 
   /* ---------- vue : projets ---------- */
@@ -674,13 +777,11 @@
   }
 
   /* ---------- vue : positions ---------- */
+  // Connexion Search Console indépendante de l'identifiant : le serveur ouvre l'autorisation Google
+  // (lecture seule) et reçoit lui-même le jeton au retour, sur /api/google/callback.
   function connectSearchConsole() {
-    // Nouvelle autorisation Google avec la permission Search Console (lecture seule) ; au retour,
-    // onAuthStateChange transmet le jeton de rafraîchissement au serveur, qui le chiffre.
-    sessionStorage.setItem("gsc-connect", "1");
-    sessionStorage.setItem("after-login", "#/positions");
-    sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + "/", scopes: CONFIG.google_scope,
-      queryParams: { access_type: "offline", prompt: "consent", login_hint: ME && ME.email || "" } } });
+    api("/api/google/connect-url" + (ME && ME.email ? "?hint=" + encodeURIComponent(ME.email) : ""))
+      .then(function (r) { location.href = r.url; }).catch(function (e) { toast(e.message, "bad"); });
   }
   function viewPositions(flash) {
     loading();
@@ -694,7 +795,7 @@
       if (!st.connected) {
         fill(main, head, msg, h("div", { class: "card blue", style: "display:grid;gap:14px;justify-items:start" },
           h("h3", {}, "Connectez votre Search Console"),
-          h("p", { class: "note", style: "color:#3d3a38" }, "Google vous demandera d'autoriser la lecture seule de vos données Search Console. Choisissez le compte Google qui a accès à vos sites. Vigie SEO ne peut rien modifier."),
+          h("p", { class: "note" }, "Google vous demandera d'autoriser la lecture seule de vos données Search Console. Vous pouvez choisir n'importe quel compte Google ayant accès à vos sites. Vigie SEO ne peut rien modifier."),
           h("button", { class: "btn btn-dark", type: "button", onclick: connectSearchConsole }, "Connecter la Search Console")));
         return;
       }
@@ -1429,6 +1530,262 @@
     return box;
   }
 
+  /* ---------- connexion, inscription, mot de passe ---------- */
+  var AUTH_ERRORS = [
+    [/invalid login credentials/i, "E-mail ou mot de passe incorrect."],
+    [/email not confirmed/i, "Confirmez d'abord votre adresse : un lien vous a été envoyé par e-mail."],
+    [/user already registered/i, "Un compte existe déjà avec cette adresse. Connectez-vous ou réinitialisez le mot de passe."],
+    [/password should be at least|weak password/i, "Mot de passe trop court : 8 caractères au minimum."],
+    [/rate limit|too many/i, "Trop de tentatives : réessayez dans quelques minutes."],
+    [/invalid.*(code|totp)|code.*invalid|expired/i, "Code incorrect ou expiré."],
+    [/email.*invalid|invalid.*email/i, "Adresse e-mail invalide."]];
+  function authMessage(e) {
+    var m = (e && (e.message || e.error_description)) || String(e);
+    for (var i = 0; i < AUTH_ERRORS.length; i++) if (AUTH_ERRORS[i][0].test(m)) return AUTH_ERRORS[i][1];
+    return m;
+  }
+  function eyeIcon(open) {
+    return svg("svg", { viewBox: "0 0 24 24", width: 20, height: 20, fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "aria-hidden": "true" },
+      svg("path", { d: "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" }), svg("circle", { cx: 12, cy: 12, r: 3 }),
+      open ? null : svg("path", { d: "M4 4l16 16" }));
+  }
+  function passwordField(id, label, autocomplete, withMeter) {
+    var input = h("input", { type: "password", id: id, autocomplete: autocomplete, required: true, minlength: 8 });
+    var toggleBtn = h("button", { type: "button", class: "pw-toggle", "aria-label": "Afficher le mot de passe", onclick: function () {
+      var show = input.type === "password"; input.type = show ? "text" : "password";
+      toggleBtn.setAttribute("aria-label", show ? "Masquer le mot de passe" : "Afficher le mot de passe"); fill(toggleBtn, eyeIcon(!show));
+    } }, eyeIcon(false));
+    var meter = h("div", { class: "pw-meter", "aria-hidden": "true" }, h("span"), h("span"), h("span"), h("span")), hint = h("span", { class: "pw-hint" });
+    if (withMeter) input.addEventListener("input", function () {
+      var v = input.value, score = (v.length >= 8) + (v.length >= 12) + (/[a-z]/.test(v) && /[A-Z]/.test(v)) + (/\d/.test(v) && /[^\w]/.test(v));
+      meter.dataset.score = v ? Math.max(1, score) : 0;
+      hint.textContent = !v ? "" : ["", "Faible", "Moyen", "Bon", "Excellent"][Math.max(1, score)];
+    });
+    return { input: input, el: h("div", { class: "field" }, h("label", { for: id }, label), h("div", { class: "pw-wrap" }, input, toggleBtn),
+      withMeter ? h("div", { class: "pw-row" }, meter, hint) : null) };
+  }
+  function googleButton(label) {
+    return h("button", { class: "btn btn-google", type: "button", onclick: googleSignIn },
+      svg("svg", { viewBox: "0 0 48 48", width: 20, height: 20, "aria-hidden": "true" },
+        svg("path", { fill: "#EA4335", d: "M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.9 6.1C12.4 13.7 17.7 9.5 24 9.5z" }),
+        svg("path", { fill: "#4285F4", d: "M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.1 5.3-4.6 7l7.2 5.6c4.2-3.9 7.1-9.6 7.1-17.1z" }),
+        svg("path", { fill: "#FBBC05", d: "M10.5 28.6c-.5-1.4-.8-2.9-.8-4.6s.3-3.2.8-4.6l-7.9-6.1C.9 16.6 0 20.2 0 24s.9 7.4 2.6 10.7l7.9-6.1z" }),
+        svg("path", { fill: "#34A853", d: "M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.2-5.6c-2 1.4-4.7 2.3-8.7 2.3-6.3 0-11.6-4.2-13.5-10l-7.9 6.1C6.6 42.6 14.6 48 24 48z" })),
+      label);
+  }
+  function authVisual() {
+    var lines = ["Votre audit SEO complet en quelques minutes", "Vos positions Google relevées chaque jour", "Un plan d'action clair, par priorité", "Données hébergées en Europe, 2FA incluse"];
+    var line = h("p", { class: "auth-line" }, lines[0]), i = 0;
+    var timer = setInterval(function () {
+      if (!line.isConnected) { clearInterval(timer); return; }
+      line.classList.add("out");
+      setTimeout(function () { i = (i + 1) % lines.length; line.textContent = lines[i]; line.classList.remove("out"); }, 350);
+    }, 3200);
+    return h("aside", { class: "auth-visual", "aria-hidden": "true" },
+      h("span", { class: "auth-float f1" }, "Score 92 ▲"), h("span", { class: "auth-float f2" }, "✓ 3 erreurs corrigées"), h("span", { class: "auth-float f3" }, "▲ Top 10"),
+      eyeMark(200, "auth-eye"), line);
+  }
+  function viewAuth(mode) {
+    var title = { login: "Bon retour 👋", signup: "Créez votre compte", forgot: "Mot de passe oublié" }[mode];
+    var sub = { login: "Connectez-vous pour retrouver vos sites.", signup: "Gratuit, sans carte bancaire. Votre premier audit dans 2 minutes.",
+      forgot: "Indiquez votre adresse : nous vous envoyons un lien pour choisir un nouveau mot de passe." }[mode];
+    var err = h("div", { role: "alert" }), panel = h("div", { class: "auth-panel" });
+    var email = h("input", { type: "email", id: "au-email", autocomplete: "email", required: true, placeholder: "vous@exemple.fr" });
+    var name = h("input", { type: "text", id: "au-name", autocomplete: "name", placeholder: "Camille Martin" });
+    var pw = passwordField("au-pw", "Mot de passe", mode === "signup" ? "new-password" : "current-password", mode === "signup");
+    var submit = h("button", { class: "btn btn-dark btn-block", type: "submit" }, { login: "Se connecter", signup: "Créer mon compte", forgot: "Envoyer le lien" }[mode]);
+    function showError(e) {
+      fill(err, h("div", { class: "error shake" }, authMessage(e)));
+      if (/not confirmed/i.test((e && e.message) || "")) err.firstChild.append(" ", h("button", { class: "link-btn", type: "button", onclick: function () {
+        sb.auth.resend({ type: "signup", email: email.value, options: { emailRedirectTo: location.origin + "/" } })
+          .then(function (r) { if (r.error) throw r.error; toast("Lien de confirmation renvoyé ✓", "good"); }).catch(function (x) { toast(authMessage(x), "bad"); });
+      } }, "Renvoyer le lien"));
+    }
+    function sent(head, text) {
+      fill(panel, h("div", { class: "auth-sent" }, h("div", { class: "mail-anim", "aria-hidden": "true" }, h("span", { class: "mail-env" }, "✉")),
+        h("h1", {}, head), h("p", { class: "muted" }, text),
+        h("p", { class: "note" }, "Rien reçu ? Vérifiez les indésirables, ou ", h("a", { href: "#/" + (mode === "forgot" ? "mot-de-passe" : "inscription"), onclick: function () { setTimeout(route, 0); } }, "recommencez"), ".")));
+    }
+    var form = h("form", { class: "auth-form", novalidate: true, onsubmit: function (e) {
+      e.preventDefault(); fill(err);
+      if (!email.value || !/^\S+@\S+\.\S+$/.test(email.value)) { showError(new Error("email invalid")); return; }
+      if (mode !== "forgot" && pw.input.value.length < 8) { showError(new Error("password should be at least 8")); return; }
+      submit.disabled = true; submit.classList.add("loading");
+      var p = mode === "login" ? sb.auth.signInWithPassword({ email: email.value, password: pw.input.value })
+        : mode === "signup" ? sb.auth.signUp({ email: email.value, password: pw.input.value, options: { emailRedirectTo: location.origin + "/", data: name.value ? { full_name: name.value.trim() } : {} } })
+          : sb.auth.resetPasswordForEmail(email.value, { redirectTo: location.origin + "/?reinitialisation=1" });
+      p.then(function (r) {
+        if (r.error) throw r.error;
+        if (mode === "signup" && !r.data.session) sent("Vérifiez votre boîte mail", "Un lien de confirmation vient d'être envoyé à " + email.value + ". Cliquez dessus pour activer votre compte.");
+        else if (mode === "forgot") sent("C'est envoyé", "Si un compte existe pour " + email.value + ", vous allez recevoir un lien pour choisir un nouveau mot de passe.");
+      }).catch(showError).then(function () { submit.disabled = false; submit.classList.remove("loading"); });
+    } },
+      mode === "signup" ? h("div", { class: "field" }, h("label", { for: "au-name" }, "Prénom et nom ", h("span", { class: "muted" }, "(facultatif)")), name) : null,
+      h("div", { class: "field" }, h("label", { for: "au-email" }, "Adresse e-mail"), email),
+      mode !== "forgot" ? pw.el : null,
+      mode === "login" ? h("a", { class: "auth-forgot", href: "#/mot-de-passe" }, "Mot de passe oublié ?") : null,
+      err, submit,
+      mode !== "forgot" ? [h("div", { class: "auth-or" }, h("span", {}, "ou")), googleButton(mode === "signup" ? "S'inscrire avec Google" : "Continuer avec Google")] : null,
+      mode === "signup" ? h("p", { class: "note" }, "En créant un compte, vous acceptez notre ", h("a", { href: "/confidentialite.html" }, "politique de confidentialité"), ".") : null);
+    var tabs = mode === "forgot" ? h("a", { class: "crumb", href: "#/connexion" }, "← Retour à la connexion")
+      : h("div", { class: "auth-tabs", "data-active": mode, role: "tablist" },
+        h("a", { href: "#/connexion", role: "tab", "aria-selected": String(mode === "login") }, "Connexion"),
+        h("a", { href: "#/inscription", role: "tab", "aria-selected": String(mode === "signup") }, "Inscription"));
+    fill(panel, tabs, h("h1", {}, title), h("p", { class: "muted auth-sub" }, sub), form);
+    fill(main, h("section", { class: "auth" }, panel, authVisual()));
+    setTimeout(function () { (mode === "signup" ? name : email).focus(); }, 50);
+  }
+
+  // Saisie d'un code à 6 chiffres en 6 cases (collage accepté, validation automatique)
+  function codeInput(onComplete) {
+    var boxes = [];
+    var wrap = h("div", { class: "code", role: "group", "aria-label": "Code à 6 chiffres" });
+    for (var i = 0; i < 6; i++) (function (i) {
+      var b = h("input", { type: "text", inputmode: "numeric", autocomplete: i ? "off" : "one-time-code", maxlength: 6, "aria-label": "Chiffre " + (i + 1) });
+      b.addEventListener("input", function () {
+        var digits = b.value.replace(/\D/g, "");
+        if (digits.length > 1) { digits.split("").slice(0, 6 - i).forEach(function (d, k) { boxes[i + k].value = d; }); }
+        else b.value = digits;
+        var next = boxes.findIndex(function (x) { return !x.value; });
+        if (next === -1) { boxes[5].focus(); onComplete(boxes.map(function (x) { return x.value; }).join("")); } else boxes[next].focus();
+      });
+      b.addEventListener("keydown", function (e) { if (e.key === "Backspace" && !b.value && i) { boxes[i - 1].value = ""; boxes[i - 1].focus(); } });
+      boxes.push(b); wrap.append(b);
+    })(i);
+    wrap.reset = function () { boxes.forEach(function (x) { x.value = ""; }); boxes[0].focus(); wrap.classList.remove("shake"); void wrap.offsetWidth; wrap.classList.add("shake"); };
+    wrap.focusFirst = function () { boxes[0].focus(); };
+    return wrap;
+  }
+  function viewMfaChallenge() {
+    var err = h("div", { role: "alert" }), busy = false;
+    var code = codeInput(function (value) {
+      if (busy) return; busy = true; fill(err);
+      sb.auth.mfa.listFactors().then(function (r) {
+        var f = ((r.data && r.data.totp) || []).filter(function (x) { return x.status === "verified"; })[0];
+        if (!f) throw new Error("Aucune méthode de vérification trouvée");
+        return sb.auth.mfa.challengeAndVerify({ factorId: f.id, code: value });
+      }).then(function (r) {
+        if (r.error) throw r.error;
+        MFA_PENDING = false; SESSION = r.data && r.data.access_token ? Object.assign({}, SESSION, r.data) : SESSION;
+        return sb.auth.getSession().then(function (g) { SESSION = g.data.session || SESSION; toast("Vérifié ✓ Bienvenue !", "good"); renderTop(); renderFooter(); enterApp(); });
+      }).catch(function (e) { fill(err, h("div", { class: "error" }, authMessage(e))); code.reset(); }).then(function () { busy = false; });
+    });
+    fill(main, h("section", { class: "auth auth-narrow" }, h("div", { class: "auth-panel center" }, eyeMark(84, "auth-eye-small"),
+      h("h1", {}, "Code de vérification"), h("p", { class: "muted auth-sub" }, "Ouvrez votre application d'authentification (Google Authenticator, 1Password…) et saisissez le code à 6 chiffres affiché pour Vigie SEO."),
+      code, err, h("button", { class: "link-btn", type: "button", onclick: function () { sb.auth.signOut(); } }, "Utiliser un autre compte"))));
+    setTimeout(code.focusFirst, 50);
+  }
+  function viewNewPassword() {
+    var pw = passwordField("np-pw", "Nouveau mot de passe", "new-password", true), err = h("div", { role: "alert" });
+    var btn = h("button", { class: "btn btn-dark btn-block", type: "submit" }, "Enregistrer");
+    fill(main, h("section", { class: "auth auth-narrow" }, h("div", { class: "auth-panel" }, h("h1", {}, "Nouveau mot de passe"),
+      h("p", { class: "muted auth-sub" }, "Choisissez un mot de passe d'au moins 8 caractères."),
+      h("form", { class: "auth-form", onsubmit: function (e) {
+        e.preventDefault(); if (pw.input.value.length < 8) { fill(err, h("div", { class: "error" }, "8 caractères au minimum.")); return; }
+        btn.disabled = true;
+        sb.auth.updateUser({ password: pw.input.value }).then(function (r) { if (r.error) throw r.error; toast("Mot de passe modifié ✓", "good"); location.hash = "#/"; })
+          .catch(function (x) { fill(err, h("div", { class: "error" }, authMessage(x))); }).then(function () { btn.disabled = false; });
+      } }, pw.el, err, btn))));
+  }
+
+  /* ---------- sécurité du compte : méthodes de connexion, mot de passe, 2FA ---------- */
+  function securityCard() {
+    var box = h("section", { class: "section" }, h("h2", { style: "margin-bottom:16px" }, "Sécurité"), h("div", { class: "card" }, h("span", { class: "spinner" })));
+    sb.auth.mfa.listFactors().then(function (r) {
+      var factors = ((r.data && r.data.totp) || []), verified = factors.filter(function (f) { return f.status === "verified"; })[0];
+      var providers = (SESSION.user.app_metadata && SESSION.user.app_metadata.providers) || [];
+      var pw = passwordField("sec-pw", "Nouveau mot de passe", "new-password", true);
+      fill(box.lastChild,
+        h("div", { class: "switch-row", style: "cursor:default" }, h("span", { class: "switch-text" }, h("b", {}, "Double authentification (2FA)"),
+          h("span", { class: "muted" }, verified ? "Activée : un code à 6 chiffres est demandé à chaque connexion." : "Protégez votre compte avec un code temporaire, en plus du mot de passe.")),
+          verified ? h("span", { class: "badge-on" }, "✓ Activée") : null,
+          verified ? h("button", { class: "btn btn-small danger", type: "button", onclick: function () {
+            confirmDialog("Désactiver la double authentification ?", "Votre compte ne sera plus protégé que par le mot de passe.", "Désactiver").then(function (ok) {
+              if (!ok) return;
+              sb.auth.mfa.unenroll({ factorId: verified.id }).then(function (x) { if (x.error) throw x.error; toast("2FA désactivée", ""); return sb.auth.refreshSession(); })
+                .then(function () { viewAccount(); }).catch(function (e) { toast(authMessage(e), "bad"); });
+            });
+          } }, "Désactiver") : h("button", { class: "btn btn-small btn-dark", type: "button", onclick: function () { enrollTotp(factors); } }, "Activer")),
+        h("div", { class: "switch-row", style: "cursor:default;display:block" }, h("b", {}, "Méthodes de connexion"),
+          h("p", { class: "muted", style: "margin-top:4px" }, SESSION.user.email + " · " + (providers.length ? providers.map(function (p) { return p === "email" ? "e-mail et mot de passe" : p === "google" ? "Google" : p; }).join(", ") : "e-mail"))),
+        h("form", { class: "switch-row", style: "display:grid;gap:12px;cursor:default", onsubmit: function (e) {
+          e.preventDefault();
+          if (pw.input.value.length < 8) { toast("8 caractères au minimum", "bad"); return; }
+          sb.auth.updateUser({ password: pw.input.value }).then(function (x) { if (x.error) throw x.error; pw.input.value = ""; toast("Mot de passe modifié ✓", "good"); })
+            .catch(function (x) { toast(authMessage(x), "bad"); });
+        } }, h("b", {}, providers.indexOf("email") === -1 ? "Ajouter un mot de passe" : "Changer de mot de passe"), pw.el,
+          h("div", {}, h("button", { class: "btn btn-small", type: "submit" }, "Enregistrer le mot de passe"))));
+    }).catch(function (e) { fill(box.lastChild, errorBox(e)); });
+    return box;
+  }
+  function enrollTotp(existing) {
+    // on retire les inscriptions abandonnées avant d'en créer une nouvelle
+    Promise.all((existing || []).filter(function (f) { return f.status !== "verified"; }).map(function (f) { return sb.auth.mfa.unenroll({ factorId: f.id }); }))
+      .then(function () { return sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "Vigie SEO " + new Date().toLocaleDateString("fr-FR") }); })
+      .then(function (r) {
+        if (r.error) throw r.error;
+        var f = r.data, err = h("div", { role: "alert" });
+        var code = codeInput(function (value) {
+          sb.auth.mfa.challengeAndVerify({ factorId: f.id, code: value }).then(function (x) {
+            if (x.error) throw x.error;
+            closeOverlay(); toast("Double authentification activée ✓", "good"); refreshMe().then(viewAccount);
+          }).catch(function (e) { fill(err, h("div", { class: "error" }, authMessage(e))); code.reset(); });
+        });
+        modal("Activer la double authentification", [h("p", { class: "eyebrow" }, "Double authentification"), h("h2", {}, "Scannez ce QR code"),
+          h("ol", { class: "note", style: "margin:0;padding-left:20px;display:grid;gap:4px" },
+            h("li", {}, "Ouvrez Google Authenticator, 1Password, Authy ou l'application de votre choix."),
+            h("li", {}, "Ajoutez un compte en scannant le QR code."), h("li", {}, "Saisissez le code à 6 chiffres affiché.")),
+          h("div", { class: "qr" }, h("img", { src: f.totp.qr_code, alt: "QR code de la double authentification", width: 190, height: 190 })),
+          h("details", { class: "note" }, h("summary", {}, "Impossible de scanner ? Saisissez la clé à la main"), h("code", { class: "secret" }, f.totp.secret)),
+          code, err, h("div", { class: "form-row" }, h("button", { class: "btn", type: "button", onclick: closeOverlay }, "Annuler"))]);
+        setTimeout(code.focusFirst, 50);
+      }).catch(function (e) { toast(authMessage(e), "bad"); });
+  }
+
+  /* ---------- vue : connexions (outils externes) ---------- */
+  var GOOGLE_FLASH_C = { ok: ["good", "Search Console connectée ✓"], refuse: ["bad", "Connexion annulée : l'accès à la Search Console n'a pas été autorisé."],
+    erreur: ["bad", "La connexion à Google a échoué. Vérifiez que la case Search Console est cochée, puis réessayez."],
+    expire: ["bad", "La demande de connexion a expiré, recommencez."] };
+  function viewConnections(flash) {
+    loading();
+    api("/api/google/status").then(function (st) {
+      if (flash && GOOGLE_FLASH_C[flash]) { toast(GOOGLE_FLASH_C[flash][1], GOOGLE_FLASH_C[flash][0]); history.replaceState(null, "", "#/connexions"); }
+      function tool(o) {
+        return h("article", { class: "card tool " + (o.connected ? "on" : "") + (o.soon ? " soon" : "") },
+          h("div", { class: "tool-head" }, h("span", { class: "tool-icon", style: "background:" + o.color }, o.icon),
+            h("div", {}, h("h3", {}, o.name), h("p", { class: "muted" }, o.desc)),
+            o.connected ? h("span", { class: "badge-on" }, "✓ Connecté") : o.soon ? h("span", { class: "badge-soon" }, "Bientôt") : null),
+          o.detail ? h("p", { class: "note" }, o.detail) : null,
+          o.actions ? h("div", { class: "form-row" }, o.actions) : null);
+      }
+      var gsc = st.connected;
+      var illus = svg("svg", { class: "conn-illus", viewBox: "0 0 420 160", "aria-hidden": "true" },
+        svg("path", { class: "conn-line" + (gsc ? " on" : ""), d: "M210 80 C150 80 120 40 70 40" }),
+        svg("path", { class: "conn-line", d: "M210 80 C150 80 120 120 70 120" }),
+        svg("path", { class: "conn-line", d: "M210 80 C270 80 300 80 350 80" }),
+        svg("circle", { class: "conn-node" + (gsc ? " on" : ""), cx: 70, cy: 40, r: 18 }), svg("circle", { class: "conn-node", cx: 70, cy: 120, r: 18 }), svg("circle", { class: "conn-node", cx: 350, cy: 80, r: 18 }));
+      var center = eyeMark(76, "conn-eye");
+      fill(main,
+        h("section", { class: "hero", style: "margin-bottom:24px" }, h("p", { class: "eyebrow" }, "Connexions"), h("h1", {}, "Branchez vos outils."),
+          h("p", {}, "Vigie SEO lit vos données en lecture seule pour vous conseiller. Chaque connexion se coupe en un clic.")),
+        h("div", { class: "conn-stage" }, illus, center),
+        h("div", { class: "grid" },
+          tool({ name: "Google Search Console", color: "#d2edff", icon: "G", connected: gsc,
+            desc: "Requêtes, clics, impressions et positions de vos sites.",
+            detail: gsc ? "Compte Google : " + (st.email || "connecté") + " · " + st.properties.length + " propriété(s) suivie(s) sur " + st.max_properties + "." : "Lecture seule. Vous pouvez utiliser un compte Google différent de celui de Vigie SEO.",
+            actions: gsc ? [h("a", { class: "btn btn-small btn-dark", href: "#/positions" }, "Voir mes positions"),
+              h("button", { class: "btn btn-small", type: "button", onclick: connectSearchConsole }, "Changer de compte"),
+              h("button", { class: "btn btn-small danger", type: "button", onclick: function () {
+                confirmDialog("Déconnecter la Search Console ?", "L'accès sera révoqué chez Google. Les données déjà importées restent dans Vigie SEO.", "Déconnecter").then(function (ok) {
+                  if (ok) api("/api/google/disconnect", {}).then(function () { toast("Search Console déconnectée", ""); viewConnections(); });
+                });
+              } }, "Déconnecter")]
+              : [h("button", { class: "btn btn-dark", type: "button", onclick: connectSearchConsole }, "Connecter la Search Console")] }),
+          tool({ name: "Google Analytics 4", color: "#ffc3c3", icon: "A", soon: true, desc: "Trafic, conversions et pages qui rapportent." }),
+          tool({ name: "GitHub", color: "#d9f4e6", icon: "⌥", soon: true, desc: "Corrections SEO proposées automatiquement en pull request." })));
+    }).catch(fail);
+  }
+
   /* ---------- vue : compte ---------- */
   function viewAccount() {
     loading();
@@ -1449,7 +1806,7 @@
           h("div", { class: "card blue", style: "display:grid;gap:14px;align-content:start;justify-items:start" }, h("h3", {}, "Search Console"),
             h("p", {}, ME.google ? "Connectée." : "Non connectée."), h("a", { class: "btn btn-small", href: "#/positions" }, ME.google ? "Gérer" : "Connecter"),
             h("button", { class: "btn btn-small", type: "button", onclick: function () { sb.auth.signOut(); } }, "Se déconnecter"))),
-        emailSettings(),
+        securityCard(), emailSettings(),
         h("section", { class: "section", id: "offres" }, h("h2", { style: "margin-bottom:8px" }, "Changer d'offre"),
           h("p", { class: "note", style: "margin-bottom:22px" }, "Le paiement en ligne arrive bientôt : en attendant, écrivez-nous pour changer d'offre."), plansGrid(ME.plan)),
         h("section", { class: "section" }, h("details", { class: "acc" }, h("summary", {}, "Supprimer mon compte"),
@@ -1483,8 +1840,10 @@
       ["tracking", "#/suivi", "Suivi", "Vos positions chaque jour, face aux concurrents"]] },
     { group: "Recherche", items: [["keywords", "#/mots-cles", "Mots-clés", "Volumes, difficulté et intention"],
       ["domain", "#/domaine", "Domaines", "Trafic, mots-clés et backlinks de n'importe quel site"],
-      ["competitors", "#/concurrents", "Concurrents", "Comparaison technique avec vos rivaux"]] }];
-  var ROUTE_SECTION = { site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
+      ["competitors", "#/concurrents", "Concurrents", "Comparaison technique avec vos rivaux"]] },
+    { group: "Réglages", items: [["connections", "#/connexions", "Connexions", "Search Console, et bientôt GA4 et GitHub"],
+      ["account", "#/compte", "Mon compte", "Offre, e-mails, sécurité et double authentification"]] }];
+  var ROUTE_SECTION = { connexions: "connections", site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
   var currentSection = "home";
   var menu = document.getElementById("menu"), burger = document.getElementById("burger"), topBar = document.querySelector(".top");
   var lastFocus = null, menuTimer = null;
@@ -1552,12 +1911,14 @@
 
   function renderTop() {
     var actions = document.getElementById("top-actions"), section = document.getElementById("top-section");
-    burger.hidden = !SESSION; section.hidden = !SESSION;
-    if (SESSION) {
+    burger.hidden = !SESSION || MFA_PENDING; section.hidden = !SESSION || MFA_PENDING;
+    if (SESSION && !MFA_PENDING) {
       var initial = (firstName() || (ME && ME.email) || "?").charAt(0).toUpperCase();
       fill(actions, h("button", { class: "btn btn-dark top-cta", type: "button", onclick: function () { newAuditModal(); } }, h("span", { "aria-hidden": "true" }, "+ "), "Nouvel audit"),
         h("a", { class: "avatar", href: "#/compte", "aria-label": "Mon compte", title: "Mon compte" }, initial));
-    } else fill(actions, h("a", { class: "top-link", href: "#/offres" }, "Offres"), h("button", { class: "btn btn-dark", type: "button", onclick: signIn }, "Se connecter"));
+    } else if (MFA_PENDING) fill(actions, h("button", { class: "btn btn-small", type: "button", onclick: function () { sb.auth.signOut(); } }, "Se déconnecter"));
+    else fill(actions, h("a", { class: "top-link", href: "#/offres" }, "Offres"), h("a", { class: "top-link", href: "#/connexion" }, "Se connecter"),
+      h("a", { class: "btn btn-dark", href: "#/inscription" }, "Créer un compte"));
   }
   function setSection(name) {
     currentSection = ROUTE_SECTION[name] || name;
@@ -1572,7 +1933,13 @@
     var parts = hash.split("?")[0].split("/").map(decodeURIComponent), name = parts[0] || "home";
     closeOverlay(); closeMenu();
     window.scrollTo(0, 0);
-    if (!SESSION) { viewLanding(name === "offres"); main.focus({ preventScroll: true }); return; }
+    if (!SESSION) {
+      if (name === "connexion") viewAuth("login"); else if (name === "inscription") viewAuth("signup");
+      else if (name === "mot-de-passe") viewAuth("forgot"); else viewLanding(name === "offres");
+      main.focus({ preventScroll: true }); return;
+    }
+    if (MFA_PENDING) { viewMfaChallenge(); return; }
+    if (name === "connexion" || name === "inscription") { location.hash = "#/"; return; }
     setSection(name);
     if (name === "site" && parts[1]) viewSite(parts[1]);
     else if (name === "audit" && parts[1]) viewAudit(parts[1]);
@@ -1583,6 +1950,8 @@
     else if (name === "mots-cles") viewKeywords();
     else if (name === "concurrents") viewCompetitors(parts[1]);
     else if (name === "compte" || name === "offres") viewAccount();
+    else if (name === "connexions") viewConnections(qs.get("google"));
+    else if (name === "nouveau-mot-de-passe") viewNewPassword();
     else viewHome();
     main.focus({ preventScroll: true });
   }
@@ -1593,34 +1962,35 @@
   function onSession(event, session) {
     var prevId = SESSION && SESSION.user && SESSION.user.id, newId = session && session.user && session.user.id;
     SESSION = session;
-    if (booted && prevId === newId) return;
+    if (event === "PASSWORD_RECOVERY") RECOVERY = true;
+    if (booted && prevId === newId && !RECOVERY) return;
     booted = true;
-    renderTop(); renderFooter();
-    if (!session) { ME = null; if (prevId) location.hash = "#/"; route(); return; }
-    var next = sessionStorage.getItem("after-login");
+    if (!session) { ME = null; MFA_PENDING = false; renderTop(); renderFooter(); if (prevId) location.hash = "#/"; route(); return; }
+    // 2FA activée sur le compte : le code est demandé avant d'ouvrir l'application
+    sb.auth.mfa.getAuthenticatorAssuranceLevel().then(function (r) {
+      var d = (r && r.data) || {};
+      MFA_PENDING = d.nextLevel === "aal2" && d.currentLevel !== "aal2";
+      renderTop(); renderFooter();
+      if (MFA_PENDING) { viewMfaChallenge(); return; }
+      enterApp();
+    });
+  }
+  function enterApp() {
+    var next = RECOVERY ? "#/nouveau-mot-de-passe" : sessionStorage.getItem("after-login");
+    RECOVERY = false;
     sessionStorage.removeItem("after-login");
-    var chain = refreshMe();
-    if (sessionStorage.getItem("gsc-connect")) {
-      // retour de l'autorisation Search Console : le jeton de rafraîchissement n'est présent qu'à ce moment-là
-      sessionStorage.removeItem("gsc-connect");
-      chain = chain.then(function () {
-        if (!session.provider_refresh_token) throw new Error("pas de jeton");
-        return api("/api/google/token", { refresh_token: session.provider_refresh_token }).then(function () { next = "#/positions?google=ok"; });
-      }).catch(function () { next = "#/positions?google=erreur"; });
-    }
-    chain.catch(function () {}).then(function () {
+    refreshMe().catch(function () {}).then(function () {
+      renderTop();
       if (next && next !== location.hash) location.hash = next; else route();
     });
   }
 
-  // Retour d'une connexion Google refusée (?error=access_denied…) : message clair au lieu d'une page muette.
-  (function oauthError() {
-    var q = new URLSearchParams(location.search), err = q.get("error");
-    if (!err) return;
-    var gsc = sessionStorage.getItem("gsc-connect");
-    sessionStorage.removeItem("gsc-connect");
-    sessionStorage.removeItem("after-login");
-    history.replaceState(null, "", location.pathname + (gsc ? "#/positions?google=" + (err === "access_denied" ? "refuse" : "erreur") : "#/"));
+  // Retour d'une connexion Google refusée (?error=…) : on nettoie l'adresse et on revient à la page de connexion.
+  var OAUTH_ERROR = (function () {
+    var q = new URLSearchParams(location.search), err = q.get("error_description") || q.get("error");
+    if (!err) return null;
+    history.replaceState(null, "", location.pathname + "#/connexion");
+    return err;
   })();
 
   window.addEventListener("hashchange", route);
@@ -1631,5 +2001,6 @@
     sb.auth.onAuthStateChange(function (event, session) {
       setTimeout(function () { onSession(event, session); }, 0);
     });
+    if (OAUTH_ERROR) setTimeout(function () { toast("Connexion Google annulée ou refusée.", "bad"); }, 600);
   }).catch(function (e) { fail(e); });
 })();

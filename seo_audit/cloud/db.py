@@ -37,8 +37,9 @@ class Db:
             if user.get("name"):
                 c.execute("UPDATE profiles SET name=%s WHERE user_id=%s AND name IS DISTINCT FROM %s",
                           (user["name"], user["id"], user["name"]))
-            return c.execute("SELECT plan, email, plan_renews_at, created_at FROM profiles WHERE user_id=%s",
-                             (user["id"],)).fetchone()
+            return c.execute("""SELECT plan, email, plan_renews_at, created_at,
+                                       EXISTS (SELECT 1 FROM auth.mfa_factors f WHERE f.user_id = p.user_id AND f.status = 'verified') AS mfa
+                                FROM profiles p WHERE user_id=%s""", (user["id"],)).fetchone()
 
     def usage_month(self, user_id: str) -> dict:
         with self.conn() as c:

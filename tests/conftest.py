@@ -10,6 +10,7 @@ MIGRATIONS = sorted((Path(__file__).parent.parent / "supabase" / "migrations").g
 AUTH_STUB = """
 create schema auth;
 create table auth.users (id uuid primary key, email text);
+create table auth.mfa_factors (id uuid primary key default gen_random_uuid(), user_id uuid, status text);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.uid', true), '')::uuid $$;
 create role authenticated; create role anon;
 grant usage on schema auth to authenticated;

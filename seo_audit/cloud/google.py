@@ -17,6 +17,40 @@ class GoogleError(Exception):
         self.reconnect = reconnect
 
 
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+
+
+def auth_url(client_id: str, redirect_uri: str, state: str, login_hint: str = "") -> str:
+    from urllib.parse import urlencode
+    params = {"client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code", "state": state,
+              "scope": f"{SCOPE} openid email", "access_type": "offline", "prompt": "consent", "include_granted_scopes": "true"}
+    if login_hint:
+        params["login_hint"] = login_hint
+    return AUTH_URL + "?" + urlencode(params)
+
+
+def exchange_code(code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict:
+    """Échange le code d'autorisation : {refresh_token, email, scope}."""
+    import base64
+    import json
+    r = httpx.post(TOKEN_URL, timeout=20, data={"code": code, "client_id": client_id, "client_secret": client_secret,
+                                               "redirect_uri": redirect_uri, "grant_type": "authorization_code"})
+    data = r.json() if r.content else {}
+    if r.status_code != 200:
+        raise GoogleError(data.get("error_description") or "Google a refusé la connexion")
+    if SCOPE not in data.get("scope", ""):
+        raise GoogleError("L'accès à la Search Console n'a pas été autorisé")
+    if not data.get("refresh_token"):
+        raise GoogleError("Google n'a pas fourni d'accès durable : retirez Vigie SEO de votre compte Google puis reconnectez")
+    email = None
+    try:  # id_token reçu directement de Google en HTTPS : on lit seulement l'adresse affichée
+        part = data["id_token"].split(".")[1]
+        email = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))).get("email")
+    except (KeyError, ValueError, IndexError):
+        pass
+    return {"refresh_token": data["refresh_token"], "email": email}
+
+
 def access_token(refresh_token: str, client_id: str, client_secret: str) -> str:
     r = httpx.post(TOKEN_URL, timeout=20, data={
         "grant_type": "refresh_token", "refresh_token": refresh_token,

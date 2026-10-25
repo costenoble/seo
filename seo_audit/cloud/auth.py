@@ -32,4 +32,5 @@ def verify_token(token: str, settings) -> dict:
     except jwt.PyJWTError as exc:
         raise AuthError(f"Session invalide : {exc}") from exc
     meta = claims.get("user_metadata") or {}
-    return {"id": claims["sub"], "email": claims.get("email"), "name": (meta.get("full_name") or meta.get("name") or "").strip() or None}
+    return {"id": claims["sub"], "email": claims.get("email"), "name": (meta.get("full_name") or meta.get("name") or "").strip() or None,
+            "aal": claims.get("aal", "aal1")}

@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import time
 from datetime import timedelta
 from functools import wraps
@@ -11,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from flask import Flask, Response, abort, g, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, g, jsonify, redirect, request, send_from_directory
 
 from .. import keywords as kw
 from ..engine import run_tick, step_audit
@@ -78,6 +79,8 @@ def create_app(settings: Settings | None = None) -> Flask:
             except AuthError as exc:
                 return jsonify(error=str(exc)), 401
             g.profile = db.profile(g.user)
+            if g.profile["mfa"] and g.user["aal"] != "aal2":  # 2FA activée : rien sans le code, même en contournant l'interface
+                return jsonify(error="Double authentification requise", mfa_required=True), 401
             g.limits = limits(g.profile["plan"])
             return fn(*a, **kw_)
         return wrapper
@@ -219,7 +222,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     @authed
     def me():
         usage = db.usage_month(user_id())
-        return jsonify(email=g.user["email"], plan=g.profile["plan"], limits=g.limits,
+        return jsonify(email=g.user["email"], plan=g.profile["plan"], limits=g.limits, mfa=g.profile["mfa"],
                        usage={k: usage.get(k, 0) for k in ("audit", "competitor", "keywords", "domain")},
                        running=db.running_count(user_id()), google=db.google_token(user_id()) is not None)
 
@@ -364,17 +367,47 @@ def create_app(settings: Settings | None = None) -> Flask:
         return jsonify(connected=tok is not None, email=tok["email"] if tok else None,
                        properties=db.properties(user_id()), max_properties=g.limits["gsc_properties"])
 
-    @app.post("/api/google/token")
+    # Connexion Search Console indépendante de l'identifiant Vigie SEO : OAuth Google côté serveur.
+    def _google_redirect_uri() -> str:
+        return settings.app_url + "/api/google/callback"
+
+    def _sign_state(uid: str) -> str:
+        payload = f"{uid}.{int(time.time()) + 900}.{os.urandom(6).hex()}"
+        return payload + "." + emails.sign(settings.token_key, payload, "google-oauth")
+
+    def _read_state(state: str) -> str | None:
+        try:
+            uid, exp, nonce, mac = state.split(".")
+        except ValueError:
+            return None
+        if int(exp) < time.time() or not emails.verify(settings.token_key, f"{uid}.{exp}.{nonce}", "google-oauth", mac):
+            return None
+        return uid
+
+    @app.get("/api/google/connect-url")
     @authed
-    def google_token():
-        """Le navigateur transmet le jeton de rafraîchissement reçu de Google à la connexion (une seule fois)."""
-        data = body()
-        rt = (data.get("refresh_token") or "").strip()
-        if not rt or len(rt) > 2048:
-            abort(400, "Jeton manquant")
-        google.access_token(rt, settings.google_client_id, settings.google_client_secret)  # vérifie qu'il marche
-        db.save_google_token(user_id(), crypto.encrypt(settings.token_key, rt), g.user["email"])
-        return jsonify(connected=True)
+    def google_connect_url():
+        if not settings.google_client_id:
+            abort(503, "Connexion Google non configurée")
+        return jsonify(url=google.auth_url(settings.google_client_id, _google_redirect_uri(), _sign_state(user_id()),
+                                           request.args.get("hint", "")))
+
+    @app.get("/api/google/callback")
+    def google_callback():
+        """Retour de Google après autorisation ; l'identité est portée par le paramètre state signé (15 minutes)."""
+        uid = _read_state(request.args.get("state", ""))
+        if not uid:
+            return redirect("/#/connexions?google=expire")
+        if request.args.get("error"):
+            return redirect("/#/connexions?google=refuse")
+        try:
+            res = google.exchange_code(request.args.get("code", ""), settings.google_client_id,
+                                       settings.google_client_secret, _google_redirect_uri())
+        except google.GoogleError as exc:
+            log.warning("Connexion Search Console : %s", exc)
+            return redirect("/#/connexions?google=erreur")
+        db.save_google_token(uid, crypto.encrypt(settings.token_key, res["refresh_token"]), res["email"])
+        return redirect("/#/connexions?google=ok")
 
     @app.post("/api/google/disconnect")
     @authed
