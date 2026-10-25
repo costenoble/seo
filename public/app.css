@@ -691,3 +691,21 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 @media (max-width: 720px) { .ch-row { grid-template-columns: 1fr 60px 70px; } .ch-track, .ch-row .delta, .ch-row > .muted { display: none; } }
 @media (prefers-reduced-motion: reduce) { .ch-bar, .chart .draw { animation: none; } }
 .ga-help { flex-basis: 100%; } .ga-help summary { cursor: pointer; font-weight: 700; } .ga-help ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; } .ga-help p { margin-top: 8px; }
+
+/* ---------- GitHub : dépôts et corrections automatiques ---------- */
+.repo-list { display: grid; gap: 10px; width: 100%; }
+.repo-row { display: grid; grid-template-columns: minmax(110px, 1fr) 2fr; gap: 12px; align-items: center; }
+.repo-row label { font: 600 .9rem var(--head); overflow-wrap: anywhere; }
+@media (max-width: 560px) { .repo-row { grid-template-columns: 1fr; gap: 6px; } }
+.fix-box { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 14px; border-radius: 16px;
+  border: 1.5px dashed color-mix(in srgb, var(--ink) 25%, transparent); }
+.fix-box p { margin: 0; flex: 1; min-width: 180px; }
+.fix-box.done { border-style: solid; border-color: #3fb27f; background: color-mix(in srgb, #c9f0dc 55%, transparent); }
+.fix-box.failed { border-color: #e06c6c; }
+.fix-box.running { border-style: solid; }
+.fix-dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb27f; box-shadow: 0 0 0 4px color-mix(in srgb, #3fb27f 25%, transparent); }
+.fix-spin { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, var(--ink) 18%, transparent); border-top-color: #3fb27f; animation: fixspin .8s linear infinite; }
+.fix-step { font: 600 .92rem var(--head); animation: fixfade .5s ease; }
+@keyframes fixspin { to { transform: rotate(360deg); } }
+@keyframes fixfade { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .fix-spin { animation-duration: 2.4s; } .fix-step { animation: none; } }

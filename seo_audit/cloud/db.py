@@ -550,6 +550,76 @@ class Db:
                                 ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at
                                 LIMIT %s""", (user_id, n)).fetchall()
 
+    # -- GitHub et corrections automatiques ---------------------------------------------------------
+    def save_installation(self, user_id: str, installation_id: int, account: str) -> None:
+        with self.conn() as c:
+            c.execute("""INSERT INTO github_installations (user_id, installation_id, account) VALUES (%s,%s,%s)
+                         ON CONFLICT (user_id, installation_id) DO UPDATE SET account=EXCLUDED.account""", (user_id, installation_id, account))
+
+    def installations(self, user_id: str) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("SELECT installation_id, account FROM github_installations WHERE user_id=%s ORDER BY created_at",
+                             (user_id,)).fetchall()
+
+    def delete_installations(self, user_id: str) -> None:
+        with self.conn() as c:
+            c.execute("DELETE FROM github_installations WHERE user_id=%s", (user_id,))
+            c.execute("DELETE FROM github_repos WHERE user_id=%s", (user_id,))
+
+    def set_project_repo(self, user_id: str, site: str, installation_id: int, repo: str | None) -> None:
+        with self.conn() as c:
+            if not repo:
+                c.execute("DELETE FROM github_repos WHERE user_id=%s AND site=%s", (user_id, site))
+                return
+            c.execute("""INSERT INTO github_repos (user_id, site, installation_id, repo) VALUES (%s,%s,%s,%s)
+                         ON CONFLICT (user_id, site) DO UPDATE SET installation_id=EXCLUDED.installation_id, repo=EXCLUDED.repo""",
+                      (user_id, site, installation_id, repo))
+
+    def project_repo(self, user_id: str, site: str) -> dict | None:
+        with self.conn() as c:
+            return c.execute("SELECT installation_id, repo FROM github_repos WHERE user_id=%s AND site=%s", (user_id, site)).fetchone()
+
+    def project_repos(self, user_id: str) -> dict:
+        with self.conn() as c:
+            return {r["site"]: r["repo"] for r in c.execute("SELECT site, repo FROM github_repos WHERE user_id=%s", (user_id,))}
+
+    def task(self, user_id: str, task_id: str) -> dict | None:
+        try:
+            with self.conn() as c:
+                return c.execute(f"SELECT {self.TASK_COLS} FROM tasks WHERE id=%s AND user_id=%s", (task_id, user_id)).fetchone()
+        except psycopg.errors.InvalidTextRepresentation:
+            return None
+
+    def create_fix(self, user_id: str, task_id: str, site: str, repo: str) -> str:
+        with self.conn() as c:
+            return str(c.execute("INSERT INTO fixes (user_id, task_id, site, repo) VALUES (%s,%s,%s,%s) RETURNING id",
+                                 (user_id, task_id, site, repo)).fetchone()["id"])
+
+    def finish_fix(self, fix_id: str, status: str, **fields) -> None:
+        cols = [k for k in ("branch", "pr_url", "pr_number", "summary", "error") if k in fields]
+        sets = "".join(f", {k}=%s" for k in cols)
+        with self.conn() as c:
+            c.execute(f"UPDATE fixes SET status=%s, finished_at=now(){sets} WHERE id=%s", (status, *[fields[k] for k in cols], fix_id))
+
+    def latest_fixes(self, user_id: str, site: str) -> dict:
+        """Dernière correction de chaque tâche du projet ; une correction bloquée depuis plus de 3 minutes est en échec."""
+        with self.conn() as c:
+            c.execute("""UPDATE fixes SET status='failed', error='Délai dépassé, réessayez', finished_at=now()
+                         WHERE user_id=%s AND status='running' AND created_at < now() - interval '3 minutes'""", (user_id,))
+            rows = c.execute("""SELECT DISTINCT ON (task_id) task_id, status, pr_url, pr_number, summary, error, created_at
+                                FROM fixes WHERE user_id=%s AND site=%s ORDER BY task_id, created_at DESC""", (user_id, site)).fetchall()
+        return {str(r["task_id"]): {**r, "task_id": str(r["task_id"]), "created_at": r["created_at"].isoformat()} for r in rows}
+
+    def page_queries(self, user_id: str, site: str, page_url: str, limit: int = 8) -> list[str]:
+        """Requêtes Search Console d'une page (toutes les propriétés du projet)."""
+        from urllib.parse import urlsplit
+        path = urlsplit(page_url).path or "/"
+        with self.conn() as c:
+            return [r["query"] for r in c.execute(
+                """SELECT query, sum(impressions) imp FROM gsc_query_pages WHERE user_id=%s
+                   AND (page = %s OR page LIKE %s) GROUP BY query ORDER BY imp DESC LIMIT %s""",
+                (user_id, page_url, "%://%" + site + path, limit))]
+
     # -- cache des données payantes ----------------------------------------------------------
     def cache_get(self, key: str, max_age_days: int = 30):
         with self.conn() as c:

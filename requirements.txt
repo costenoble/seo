@@ -4,4 +4,5 @@ selectolax>=0.3.21  # moteur lexbor
 defusedxml>=0.7
 flask>=3.0
 psycopg[binary]>=3.2
-PyJWT[crypto]>=2.8  # vérification des sessions Supabase ; fournit aussi cryptography (chiffrement des jetons)
+PyJWT[crypto]>=2.8
+anthropic>=2.3    # rédaction des corrections automatiques (Claude)  # vérification des sessions Supabase ; fournit aussi cryptography (chiffrement des jetons)

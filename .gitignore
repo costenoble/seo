@@ -14,3 +14,5 @@ client_secret*.json
 oauth_client.json
 .vercel
 .env*.local
+secrets/
+*.pem

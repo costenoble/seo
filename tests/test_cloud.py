@@ -633,3 +633,115 @@ def test_ga4_connection_and_traffic(client, pg_dsn, monkeypatch):
     assert len(calls) == 2
     _, bob = new_user(pg_dsn)
     assert client.get("/api/ga4/traffic?property=properties/42", headers=bob).status_code == 409
+
+
+class FakeRepo:
+    """Dépôt GitHub en mémoire (site Next.js, app router)."""
+    files = {}
+    log = []
+
+    def __init__(self, token, full_name):
+        assert token == "tok-42"
+        self.full_name = full_name
+
+    def default_branch(self): return "main"
+    def head_sha(self, branch): return "sha-main"
+    def tree(self, sha): return list(self.files)
+    def read(self, path, ref): return (self.files[path], "sha-" + path) if path in self.files else None
+    def create_branch(self, name, sha): self.log.append(("branch", name, sha))
+    def write(self, path, content, message, branch, sha): self.log.append(("write", path, content, branch, sha))
+    def open_pr(self, title, head, base, body):
+        self.log.append(("pr", title, head, base, body))
+        return {"number": 7, "url": f"https://github.com/{self.full_name}/pull/7"}
+
+
+class FakeGitHubApp:
+    def __init__(self, *a): pass
+    def user_installations(self, code):
+        if code != "bon-code":
+            raise cloud_app.GitHubError("GitHub a refusé l'autorisation, recommencez l'installation")
+        return [{"id": 42, "account": "moi"}]
+    def installation_token(self, installation_id):
+        assert installation_id == 42
+        return "tok-42"
+    def repositories(self, installation_id):
+        return [{"full_name": "moi/site", "default_branch": "main", "private": True}]
+
+
+def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
+    from seo_audit.cloud import fixer, github
+    monkeypatch.setattr(cloud_app, "GitHubApp", FakeGitHubApp)
+    monkeypatch.setattr(github, "Repo", FakeRepo)
+    FakeRepo.log = []
+    FakeRepo.files = {"package.json": '{"dependencies": {"next": "15.0.0"}}',
+                      "app/layout.tsx": "export default function L({children}) { return <html lang=\"fr\">{children}</html> }",
+                      "app/tarifs/page.tsx": "export const metadata = { title: 'Tarifs' }\nexport default function P() { return null }"}
+    seen = {}
+
+    def fake_claude(api_key, task, framework, pages, files):
+        seen.update(framework=framework, files=sorted(files), pages=pages, instruction=task["instruction"])
+        return {"files": [{"path": "app/tarifs/page.tsx", "mode": "edit", "content": "",
+                           "edits": [{"search": "title: 'Tarifs' }", "replace": "title: 'Tarifs', description: 'Nos offres.' }"}]}],
+                "pr_title": "Ajoute la meta description de /tarifs", "summary": "Description ajoutée sur /tarifs.",
+                "changes": [{"page": "/tarifs", "before": "", "after": "Nos offres."}], "skipped_reason": ""}
+    monkeypatch.setattr(fixer, "ask_claude", fake_claude)
+
+    off = cloud_app.create_app(settings(pg_dsn)).test_client()
+    client = cloud_app.create_app(settings(pg_dsn, anthropic_api_key="sk", github_app_id="1", github_private_key="pem",
+                                           github_app_slug="vigie-seo")).test_client()
+    uid, h = new_user(pg_dsn)
+    assert off.get("/api/github/status", headers=h).get_json()["configured"] is False
+    st = client.get("/api/github/status", headers=h).get_json()
+    assert st["install_url"] == "https://github.com/apps/vigie-seo/installations/new" and st["installations"] == []
+
+    # retour de GitHub : redirection vers l'application, puis liaison vérifiée chez GitHub
+    r = client.get("/api/github/callback?code=bon-code&installation_id=42&setup_action=install")
+    assert r.status_code == 302 and r.headers["Location"] == "/#/connexions?github_code=bon-code&installation_id=42"
+    assert client.post("/api/github/link", json={"code": "faux"}, headers=h).status_code == 502
+    assert client.post("/api/github/link", json={"code": "bon-code"}, headers=h).get_json()["installations"][0]["account"] == "moi"
+
+    # dépôt du projet : seulement un dépôt accessible par l'installation
+    with psycopg.connect(pg_dsn) as c:
+        task_id = str(c.execute("""insert into tasks (user_id, site, fingerprint, source, priority, title, pages)
+                                   values (%s,'monsite.fr','audit:missing_description','audit','high','Meta description manquante',
+                                           '["https://monsite.fr/tarifs"]') returning id""", (uid,)).fetchone()[0])
+    assert client.post("/api/fixes", json={"task_id": task_id}, headers=h).status_code == 409
+    assert client.post("/api/github/project", json={"site": "monsite.fr", "repo": "autre/depot"}, headers=h).status_code == 403
+    assert client.post("/api/github/project", json={"site": "monsite.fr", "repo": "moi/site"}, headers=h).get_json()["linked"]
+
+    plan = client.get("/api/plan/monsite.fr", headers=h).get_json()
+    assert plan["repo"] == "moi/site" and plan["autofix"] and plan["tasks"][0]["fixable"] and plan["tasks"][0]["fix"] is None
+
+    # un autre compte ne peut pas lancer la correction
+    _, bob = new_user(pg_dsn)
+    assert client.post("/api/fixes", json={"task_id": task_id}, headers=bob).status_code == 404
+
+    r = client.post("/api/fixes", json={"task_id": task_id}, headers=h).get_json()
+    assert r["status"] == "done" and r["pr_number"] == 7 and r["pr_url"].endswith("/pull/7")
+    assert seen["framework"] == "next" and seen["files"] == ["app/layout.tsx", "app/tarifs/page.tsx"]
+    assert seen["pages"][0]["url"] == "https://monsite.fr/tarifs" and "description" in seen["instruction"].lower()
+    kinds = [e[0] for e in FakeRepo.log]
+    assert kinds == ["branch", "write", "pr"]
+    write = FakeRepo.log[1]
+    assert write[1] == "app/tarifs/page.tsx" and "description: 'Nos offres.'" in write[2] and write[4] == "sha-app/tarifs/page.tsx"
+    assert FakeRepo.log[2][3] == "main" and "vigie-seo/" in FakeRepo.log[2][2]
+    fix = client.get("/api/plan/monsite.fr", headers=h).get_json()["tasks"][0]["fix"]
+    assert fix["status"] == "done" and fix["pr_number"] == 7
+
+    # une modification introuvable est refusée sans rien écrire ; consommation comptée
+    FakeRepo.log = []
+    FakeRepo.files["app/tarifs/page.tsx"] = "export default function P() { return null }"
+    r = client.post("/api/fixes", json={"task_id": task_id}, headers=h).get_json()
+    assert r["status"] == "failed" and "introuvable" in r["error"] and FakeRepo.log == []
+    assert client.get("/api/me", headers=h).get_json()["usage"]["fix"] == 2
+
+    # quota du plan gratuit (3 par mois)
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into usage_events (user_id, kind) values (%s,'fix')", (uid,))
+    assert client.post("/api/fixes", json={"task_id": task_id}, headers=h).status_code == 402
+
+    # tâche non corrigeable automatiquement
+    with psycopg.connect(pg_dsn) as c:
+        other = str(c.execute("""insert into tasks (user_id, site, fingerprint, source, priority, title)
+                                 values (%s,'monsite.fr','audit:http_4xx','audit','high','Erreurs 404') returning id""", (uid,)).fetchone()[0])
+    assert client.post("/api/fixes", json={"task_id": other}, headers=h).status_code == 400

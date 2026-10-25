@@ -1185,7 +1185,37 @@
         t.action ? h("p", { class: "insight-action" }, "→ " + t.action) : null,
         pages.length ? h("details", { class: "pages-list" }, h("summary", {}, pages.length + " page" + (pages.length > 1 ? "s" : "") + " concernée" + (pages.length > 1 ? "s" : "")),
           h("ul", {}, pages.slice(0, 30).map(function (u) { return h("li", {}, h("a", { class: "url", href: u, target: "_blank", rel: "noopener noreferrer" }, u)); }))) : null,
-        impactView(t));
+        fixView(t), impactView(t));
+    }
+    // Correction automatique : Claude prépare la modification, GitHub reçoit une pull request à valider.
+    function fixView(t) {
+      if (!t.fixable || t.status !== "todo" || !d.autofix) return null;
+      var f = t.fix;
+      if (f && f.status === "done") return h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
+        h("p", {}, "Correction proposée" + (f.summary ? " : " + f.summary : "")),
+        h("a", { class: "btn btn-small btn-dark", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir la pull request #" + f.pr_number + " ↗"));
+      if (!d.repo) return h("div", { class: "fix-box" }, h("p", { class: "muted" }, "Vigie SEO peut corriger ceci pour vous dans votre code."),
+        h("a", { class: "btn btn-small", href: "#/connexions" }, "Associer le dépôt GitHub"));
+      var box = h("div", { class: "fix-box" + (f && f.status !== "running" ? " " + f.status : "") });
+      function idle() {
+        fill(box, f && (f.status === "failed" || f.status === "skipped") ? h("p", {}, (f.status === "skipped" ? "Rien à modifier : " : "Échec : ") + (f.error || "")) : h("p", { class: "muted" }, "Dépôt " + d.repo),
+          h("button", { class: "btn btn-small btn-green", type: "button", onclick: run }, f ? "Réessayer" : "✦ Corriger automatiquement"));
+      }
+      function run() {
+        var steps = ["Lecture du dépôt…", "Recherche des fichiers des pages…", "Rédaction de la correction…", "Ouverture de la pull request…"], i = 0;
+        var label = h("p", { class: "fix-step", "aria-live": "polite" }, steps[0]);
+        fill(box, h("span", { class: "fix-spin", "aria-hidden": "true" }), label);
+        box.className = "fix-box running";
+        var timer = setInterval(function () { if (i < steps.length - 1) label.textContent = steps[++i]; }, 6000);
+        api("/api/fixes", { task_id: t.id }).then(function (r) {
+          clearInterval(timer);
+          t.fix = { status: r.status, pr_url: r.pr_url, pr_number: r.pr_number, summary: r.summary, error: r.error };
+          toast(r.status === "done" ? "Pull request ouverte ✓ Vérifiez-la puis fusionnez-la sur GitHub." : r.status === "skipped" ? "Rien à modifier dans le code" : "La correction a échoué", r.status === "done" ? "good" : r.status === "skipped" ? "" : "bad");
+          draw();
+        }).catch(function (e) { clearInterval(timer); toast(e.message, "bad"); box.className = "fix-box"; idle(); });
+      }
+      idle();
+      return box;
     }
     function draw() {
       var counts = { todo: 0, done: 0, ignored: 0 };
@@ -1847,7 +1877,9 @@
     expire: ["bad", "La demande de connexion a expiré, recommencez."] };
   function viewConnections(flash) {
     loading();
-    api("/api/google/status").then(function (st) {
+    var ghStatus = api("/api/github/status").catch(function () { return { configured: false, installations: [], projects: {} }; });
+    Promise.all([api("/api/google/status"), ghStatus]).then(function (r) {
+      var st = r[0], gh = r[1];
       if (flash && GOOGLE_FLASH_C[flash]) { toast(GOOGLE_FLASH_C[flash][1], GOOGLE_FLASH_C[flash][0]); history.replaceState(null, "", "#/connexions"); }
       function tool(o) {
         return h("article", { class: "card tool " + (o.connected ? "on" : "") + (o.soon ? " soon" : "") },
@@ -1885,8 +1917,53 @@
             detail: st.ga4 ? "Compte Google : " + (st.email || "connecté") + ". Choisissez vos propriétés dans la page Trafic." : "Lecture seule. Utilise la même connexion Google que la Search Console.",
             actions: st.ga4 ? [h("a", { class: "btn btn-small btn-dark", href: "#/trafic" }, "Voir mon trafic")]
               : [h("button", { class: "btn btn-dark", type: "button", onclick: connectAnalytics }, "Connecter Google Analytics")] }),
-          tool({ name: "GitHub", color: "#d9f4e6", icon: "⌥", soon: true, desc: "Corrections SEO proposées automatiquement en pull request." })));
+          githubTool(gh, tool)));
     }).catch(fail);
+  }
+
+  /* ---------- GitHub : installation, dépôt de chaque projet ---------- */
+  function githubTool(gh, tool) {
+    var linked = gh.installations && gh.installations.length;
+    var base = { name: "GitHub", color: "#d9f4e6", icon: "⌥", desc: "Corrections SEO proposées automatiquement en pull request." };
+    if (!gh.configured) return tool(Object.assign(base, { soon: true }));
+    if (!linked) return tool(Object.assign(base, {
+      detail: "Vigie SEO prépare la correction (balises title, descriptions, canonical…) et vous la propose en pull request : rien n'est publié sans votre validation. Vous choisissez les dépôts autorisés.",
+      actions: [h("a", { class: "btn btn-dark", href: gh.install_url }, "Connecter GitHub")] }));
+    var repos = h("div", { class: "repo-list" }, h("p", { class: "muted" }, "Chargement des dépôts…"));
+    api("/api/github/repos").then(function (r) {
+      if (!r.sites.length) { fill(repos, h("p", { class: "note" }, "Lancez d'abord un audit : chaque projet pourra ensuite être associé à son dépôt.")); return; }
+      if (!r.repos.length) { fill(repos, h("p", { class: "note" }, "Aucun dépôt autorisé. Cliquez sur « Choisir les dépôts » pour en ajouter.")); return; }
+      fill(repos, r.sites.map(function (site) {
+        var sel = h("select", { id: "repo-" + site, "aria-label": "Dépôt de " + site },
+          h("option", { value: "" }, "Aucun dépôt"),
+          r.repos.map(function (rp) { return h("option", { value: rp.full_name, selected: r.projects[site] === rp.full_name ? "" : null }, rp.full_name); }));
+        sel.addEventListener("change", function () {
+          api("/api/github/project", { site: site, repo: sel.value }).then(function (x) {
+            toast(x.linked ? site + " ↔ " + sel.value : "Dépôt retiré de " + site, x.linked ? "good" : "");
+          }).catch(function (e) { toast(e.message, "bad"); });
+        });
+        return h("div", { class: "repo-row" }, h("label", { for: "repo-" + site }, site), sel);
+      }));
+    }).catch(function (e) { fill(repos, errorBox(e)); });
+    return tool(Object.assign(base, { connected: true,
+      detail: "Compte" + (gh.installations.length > 1 ? "s" : "") + " GitHub : " + gh.installations.map(function (i) { return i.account; }).join(", ") +
+        (gh.ai ? "." : ". La rédaction automatique sera bientôt activée.") + " Associez chaque projet à son dépôt :",
+      actions: [repos,
+        h("a", { class: "btn btn-small", href: gh.install_url }, "Choisir les dépôts"),
+        h("button", { class: "btn btn-small danger", type: "button", onclick: function () {
+          confirmDialog("Déconnecter GitHub ?", "Vigie SEO oubliera vos dépôts. Pour révoquer complètement l'accès, désinstallez aussi l'application dans les réglages GitHub.", "Déconnecter").then(function (ok) {
+            if (ok) api("/api/github/disconnect", {}).then(function () { toast("GitHub déconnecté", ""); viewConnections(); });
+          });
+        } }, "Déconnecter")] }));
+  }
+  function linkGithub(code, installation) {
+    history.replaceState(null, "", "#/connexions");
+    if (!code) { toast("Accès GitHub mis à jour", "good"); viewConnections(); return; }
+    loading();
+    api("/api/github/link", { code: code, installation_id: installation }).then(function (r) {
+      toast(r.installations.length ? "GitHub connecté ✓ Associez maintenant vos projets à leurs dépôts." : "Aucune installation trouvée sur ce compte GitHub", r.installations.length ? "good" : "bad");
+      viewConnections();
+    }).catch(function (e) { toast(e.message, "bad"); viewConnections(); });
   }
 
   /* ---------- vue : compte ---------- */
@@ -1904,7 +1981,7 @@
           h("p", {}, (fullName() && ME.email ? ME.email + " · " : "") + "Offre " + L.label + (ME.running ? " · " + ME.running + " audit(s) en cours" : ""))),
         h("div", { class: "grid" },
           h("div", { class: "card", style: "display:grid;gap:18px" }, h("h3", {}, "Consommation ce mois-ci"),
-            meter("Audits", U.audit, L.audits_month), meter("Analyses de concurrents", U.competitor, L.competitors_month), meter("Recherches de mots-clés", U.keywords, L.keywords_month), meter("Analyses de domaines", U.domain || 0, L.domains_month),
+            meter("Audits", U.audit, L.audits_month), meter("Analyses de concurrents", U.competitor, L.competitors_month), meter("Recherches de mots-clés", U.keywords, L.keywords_month), meter("Analyses de domaines", U.domain || 0, L.domains_month), meter("Corrections automatiques", U.fix || 0, L.fixes_month),
             h("p", { class: "note" }, "Jusqu'à " + fmt(L.max_pages) + " pages par audit et " + L.running + " audit(s) en parallèle.")),
           h("div", { class: "card blue", style: "display:grid;gap:14px;align-content:start;justify-items:start" }, h("h3", {}, "Search Console"),
             h("p", {}, ME.google ? "Connectée." : "Non connectée."), h("a", { class: "btn btn-small", href: "#/positions" }, ME.google ? "Gérer" : "Connecter"),
@@ -1945,7 +2022,7 @@
     { group: "Recherche", items: [["keywords", "#/mots-cles", "Mots-clés", "Volumes, difficulté et intention"],
       ["domain", "#/domaine", "Domaines", "Trafic, mots-clés et backlinks de n'importe quel site"],
       ["competitors", "#/concurrents", "Concurrents", "Comparaison technique avec vos rivaux"]] },
-    { group: "Réglages", items: [["connections", "#/connexions", "Connexions", "Search Console, et bientôt GA4 et GitHub"],
+    { group: "Réglages", items: [["connections", "#/connexions", "Connexions", "Search Console, Analytics et GitHub"],
       ["account", "#/compte", "Mon compte", "Offre, e-mails, sécurité et double authentification"]] }];
   var ROUTE_SECTION = { trafic: "traffic", connexions: "connections", site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
   var currentSection = "home";
@@ -2054,6 +2131,7 @@
     else if (name === "mots-cles") viewKeywords();
     else if (name === "concurrents") viewCompetitors(parts[1]);
     else if (name === "compte" || name === "offres") viewAccount();
+    else if (name === "connexions" && qs.has("github_code")) linkGithub(qs.get("github_code"), qs.get("installation_id"));
     else if (name === "connexions") viewConnections(qs.get("google"));
     else if (name === "trafic") viewTraffic(parts.slice(1).join("/"));
     else if (name === "nouveau-mot-de-passe") viewNewPassword();

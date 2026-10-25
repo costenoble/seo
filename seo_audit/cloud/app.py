@@ -24,6 +24,8 @@ from .dataforseo import LOCATIONS, DataForSEO, DataForSEOError
 from .insights import analyze
 from .seranking import SOURCES, SERanking, SERankingError
 from . import traffic as traffic_mod
+from . import fixer
+from .github import GitHubApp, GitHubError
 from . import emails, notify, tracking
 from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
@@ -167,6 +169,109 @@ def create_app(settings: Settings | None = None) -> Flask:
         pages = google.search_analytics_by(access, site, start, end, ["page"])
         db.replace_gsc_pages(uid, site, query_pages, pages)
 
+    # -- GitHub et corrections automatiques ----------------------------------------------------------
+    def _gh() -> GitHubApp:
+        if not (settings.github_app_id and settings.github_private_key):
+            abort(503, "Connexion GitHub pas encore configurée")
+        return GitHubApp(settings.github_app_id, settings.github_private_key, settings.github_client_id, settings.github_client_secret)
+
+    @app.get("/api/github/status")
+    @authed
+    def github_status():
+        configured = bool(settings.github_app_id and settings.github_private_key and settings.github_app_slug)
+        return jsonify(configured=configured, ai=bool(settings.anthropic_api_key),
+                       install_url=f"https://github.com/apps/{settings.github_app_slug}/installations/new" if configured else None,
+                       installations=db.installations(user_id()), projects=db.project_repos(user_id()))
+
+    @app.get("/api/github/callback")
+    def github_callback():
+        """Retour de GitHub après installation : on transmet le code à l'application, qui le valide connectée."""
+        from urllib.parse import urlencode
+        q = {k: request.args.get(k, "") for k in ("code", "installation_id", "setup_action")}
+        return redirect("/#/connexions?" + urlencode({"github_code": q["code"], "installation_id": q["installation_id"]}))
+
+    @app.post("/api/github/link")
+    @authed
+    def github_link():
+        """Lie à l'utilisateur les installations auxquelles son compte GitHub a réellement accès (vérifié chez GitHub)."""
+        code = (body().get("code") or "").strip()
+        if not code:
+            abort(400, "Code GitHub manquant")
+        try:
+            found = _gh().user_installations(code)
+        except GitHubError as exc:
+            abort(502, str(exc))
+        for inst in found:
+            db.save_installation(user_id(), inst["id"], inst["account"])
+        return jsonify(installations=db.installations(user_id()))
+
+    @app.post("/api/github/disconnect")
+    @authed
+    def github_disconnect():
+        db.delete_installations(user_id())
+        return jsonify(disconnected=True)
+
+    @app.get("/api/github/repos")
+    @authed
+    def github_repos():
+        gh, out = _gh(), []
+        try:
+            for inst in db.installations(user_id()):
+                out += [{**r, "installation_id": inst["installation_id"]} for r in gh.repositories(inst["installation_id"])]
+        except GitHubError as exc:
+            abort(502, str(exc))
+        return jsonify(repos=out, projects=db.project_repos(user_id()), sites=[s["key"] for s in db.list_sites(user_id())])
+
+    @app.post("/api/github/project")
+    @authed
+    def github_project():
+        data = body()
+        site, repo = (data.get("site") or "").strip(), (data.get("repo") or "").strip()
+        if not site:
+            abort(400, "Projet manquant")
+        if not repo:
+            db.set_project_repo(user_id(), site, 0, None)
+            return jsonify(linked=False)
+        gh = _gh()
+        for inst in db.installations(user_id()):  # le dépôt doit être accessible par une installation de l'utilisateur
+            try:
+                repos = {r["full_name"] for r in gh.repositories(inst["installation_id"])}
+            except GitHubError:
+                continue
+            if repo in repos:
+                db.set_project_repo(user_id(), site, inst["installation_id"], repo)
+                return jsonify(linked=True)
+        abort(403, "Ce dépôt n'est pas accessible avec vos installations GitHub")
+
+    @app.post("/api/fixes")
+    @authed
+    def fix_create():
+        """Prépare la correction d'une tâche et ouvre la pull request (dans la même requête, moins d'une minute)."""
+        if not settings.anthropic_api_key:
+            abort(503, "Rédaction automatique pas encore configurée")
+        task = db.task(user_id(), body().get("task_id", ""))
+        if not task:
+            abort(404, "Tâche introuvable")
+        if not fixer.fixable(task["fingerprint"]):
+            abort(400, "Cette tâche ne peut pas encore être corrigée automatiquement")
+        link = db.project_repo(user_id(), task["site"])
+        if not link:
+            abort(409, "Associez d'abord un dépôt GitHub à ce projet (page Connexions)")
+        check_monthly(g.profile["plan"], "fix", db.usage_month(user_id()).get("fix", 0))
+        fix_id = db.create_fix(user_id(), str(task["id"]), task["site"], link["repo"])
+        db.add_usage(user_id(), "fix")
+        try:
+            res = fixer.run_fix(db, settings, user_id(), {**task, "id": str(task["id"])}, link, _gh())
+        except (fixer.FixError, GitHubError) as exc:
+            db.finish_fix(fix_id, "failed", error=str(exc)[:500])
+            return jsonify(id=fix_id, status="failed", error=str(exc)), 200
+        except Exception as exc:  # erreur imprévue : on la consigne sans exposer de détail technique
+            log.exception("Correction automatique %s", fix_id)
+            db.finish_fix(fix_id, "failed", error="Erreur inattendue")
+            return jsonify(id=fix_id, status="failed", error="Erreur inattendue, réessayez"), 200
+        db.finish_fix(fix_id, res["status"], **{k: v for k, v in res.items() if k != "status"})
+        return jsonify(id=fix_id, **res)
+
     # -- e-mails -------------------------------------------------------------------------------------
     @app.get("/api/notifications")
     @authed
@@ -224,7 +329,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     def me():
         usage = db.usage_month(user_id())
         return jsonify(email=g.user["email"], plan=g.profile["plan"], limits=g.limits, mfa=g.profile["mfa"],
-                       usage={k: usage.get(k, 0) for k in ("audit", "competitor", "keywords", "domain")},
+                       usage={k: usage.get(k, 0) for k in ("audit", "competitor", "keywords", "domain", "fix")},
                        running=db.running_count(user_id()), google=db.google_token(user_id()) is not None)
 
     @app.post("/api/me/delete")
@@ -599,8 +704,13 @@ def create_app(settings: Settings | None = None) -> Flask:
                                           min(done + timedelta(days=28), last))
                     item["impact"] = impact(before, after, (last - done).days)
             out.append(item)
+        fixes = db.latest_fixes(user_id(), site)
+        for item in out:
+            item["fixable"] = bool(fixer.fixable(item["fingerprint"]))
+            item["fix"] = fixes.get(item["id"])
         return jsonify(site=site, properties=props, audit_date=report["finished_at"].isoformat() if report else None,
-                       tasks=out)
+                       tasks=out, repo=db.project_repos(user_id()).get(site),
+                       autofix=bool(settings.anthropic_api_key and settings.github_app_id))
 
     @app.post("/api/plan/tasks/<task_id>")
     @authed
