@@ -686,9 +686,9 @@
             h("p", { class: "muted" }, fmt(last.pages) + " pages explorées, dont " + fmt(last.indexable) + " indexables · audit du " + fdatetime(last.date)),
             sevs(last.issues_by_severity), connBadges(site.connections, true)),
           h("div", { class: "form-row" }, h("a", { class: "btn btn-dark", href: "#/plan/" + encodeURIComponent(key) }, "Plan d'action"),
-            h("button", { class: "btn btn-small danger", type: "button", onclick: function () { deleteProject(key, function () { location.hash = "#/"; }); } }, "Supprimer le projet"),
             h("a", { class: "btn", href: "#/audit/" + last.id }, "Voir les problèmes"),
-            h("button", { class: "btn", type: "button", onclick: function () { newAuditModal(last.url); } }, "Relancer un audit"))),
+            h("button", { class: "btn", type: "button", onclick: function () { newAuditModal(last.url); } }, "Relancer un audit"),
+            h("button", { class: "btn btn-small danger", type: "button", onclick: function () { deleteProject(key, function () { location.hash = "#/"; }); } }, "Supprimer le projet"))),
         h("section", {}, h("h2", { style: "margin-bottom:20px" }, "Score par catégorie"),
           h("div", { class: "grid", style: "grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr))" }, cats.map(function (c, i) {
             var p = prev && prev.category_scores && prev.category_scores[c];
