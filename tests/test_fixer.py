@@ -68,6 +68,23 @@ def test_locate_astro_home_and_pages():
     assert fixer.locate("astro", paths, "https://x.fr/blog/mon-article")[0] == "src/pages/blog/[slug].astro"
 
 
+def test_fixable_search_console_tasks():
+    assert "noindex" in fixer.fixable("gsc:noindex-utility")
+    assert "FAQ" in fixer.fixable("gsc:potential:/logiciel-facturation-charpentier")
+    assert fixer.fixable("gsc:brand") and fixer.fixable("gsc:versions") and fixer.fixable("gsc:quick:/blog/x")
+    assert fixer.fixable("gsc:drop:requete") is None and fixer.fixable("gsc:canni:requete") is None
+
+
+def test_content_imports_keep_data_files():
+    paths = ["app/x/page.tsx", "lib/metiers.ts", "components/marketing/MetierLanding.tsx", "components/ui/button.tsx", "src/styles/a.css"]
+    text = """import type { Metadata } from "next";
+import MetierLanding from "@/components/marketing/MetierLanding";
+import { Button } from "@/components/ui/button";
+import { getMetier } from "@/lib/metiers";
+"""
+    assert fixer.content_imports(text, "app/x/page.tsx", paths) == ["lib/metiers.ts", "components/marketing/MetierLanding.tsx"]
+
+
 def test_apply_plan_is_strict():
     files = {"a.jsx": "title='A'\ntitle='B'\n"}
     plan = {"files": [{"path": "a.jsx", "mode": "edit", "content": "", "edits": [{"search": "title='A'", "replace": "title='AA'"}]}]}

@@ -817,3 +817,45 @@ body.has-fab main { padding-bottom: 96px; }
 .diff pre .hunk { color: var(--muted); }
 
 .claude-zone, .section, .fix-panel { scroll-margin-top: 110px; }
+
+/* Search Console : Claude sous les recommandations */
+.insight-claude { display: grid; gap: 10px; margin-top: 6px; padding-top: 14px; border-top: 1.5px dashed color-mix(in srgb, var(--ink) 20%, transparent); }
+.insight-claude-head { display: flex; align-items: center; gap: 10px; font: 700 .95rem var(--head); margin: 0; }
+.claude-star.small { width: 28px; height: 28px; font-size: .85rem; box-shadow: 2px 2px 0 #3fb27f; }
+.insight-claude-item { background: var(--paper); border: 1.5px solid var(--line); border-radius: 16px; }
+.insight-claude-item > summary { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; font: 600 .92rem var(--head); list-style: none; }
+.insight-claude-item > summary::-webkit-details-marker { display: none; }
+.insight-claude-item > .fix-panel { margin: 0 12px 12px; }
+.insight-claude > .fix-panel { margin: 0; }
+
+/* requêtes : conseil par ligne et aide */
+.qtip { display: inline-block; font: 600 .75rem var(--head); padding: 4px 10px; border-radius: 99px; white-space: nowrap; background: var(--cream); border: 1.5px solid var(--line); }
+.qtip.ok { background: #c9f0dc; border-color: #c9f0dc; color: #0b5a33; }
+.qtip.wait { background: #ffe7a8; border-color: #ffe7a8; color: #6b4a00; }
+.qtip.go { background: var(--blue); border-color: var(--blue); color: #0b3a5c; }
+.qtip.far { background: var(--pink); border-color: var(--pink); color: #6b1f1f; }
+.qtip-long { margin: 0 0 14px; line-height: 1.6; }
+.query-help { margin-bottom: 18px; }
+.query-help-body { padding: 0 22px 20px; display: grid; gap: 12px; }
+.query-help-body p { margin: 0; }
+.query-help-body dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+.query-help-body dt { font: 700 .9rem var(--head); }
+.query-help-body dd { margin: 0; color: var(--muted); }
+@media (max-width: 560px) { .query-help-body dl { grid-template-columns: 1fr; } .query-help-body dd { margin-bottom: 6px; } }
+
+/* conseils personnalisés de Claude */
+.advice-card { margin-bottom: 24px; }
+.advice-summary { font: 600 1.05rem/1.55 var(--head); color: #0b0b0b !important; }
+.advice-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.advice-item { background: #fff; border: 2px solid #0b0b0b; border-radius: 20px; padding: 18px 20px; display: grid; gap: 10px;
+  animation: claudepop .5s cubic-bezier(.2,1.4,.4,1) both; animation-delay: calc(var(--k) * 90ms); }
+.advice-item p { color: #3d3734; }
+.advice-top { display: flex; gap: 12px; align-items: center; }
+.advice-top h3 { margin: 0; font-size: 1.05rem; }
+.advice-top .insight-n { width: 32px; height: 32px; font-size: .95rem; }
+.advice-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.advice-tags .tag { background: var(--cream); text-transform: none; letter-spacing: 0; border: 1.5px solid #0b0b0b; }
+.advice-tags .tag.pink { background: #ff9fb0; } .advice-tags .tag.blue { background: var(--blue); }
+.advice-steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: #3d3734; }
+.advice-card .chip { background: var(--cream); color: #0b0b0b; }
+@media (prefers-reduced-motion: reduce) { .advice-item { animation: none; } }

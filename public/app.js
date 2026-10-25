@@ -937,11 +937,30 @@
     api("/api/positions/insights?site=" + encodeURIComponent(site)).then(function (d) { renderInsights(box, d, site); })
       .catch(function (e) { fill(box, errorBox(e)); });
   }
+  // Sous une recommandation Search Console : ce que Claude peut faire tout de suite dans le code du site.
+  function insightClaude(i, tasks, repo, panels) {
+    var list = (i.targets || []).map(function (tg) { return tasks["gsc:" + tg.key]; })
+      .filter(function (t) { return t && t.fixable && (t.status === "todo" || (t.fix && t.fix.merged_at)); });
+    if (!list.length) return null;
+    function panelOf(t) { return panels[t.id] = panels[t.id] || fixPanel(t, repo, null); }
+    return h("div", { class: "insight-claude" },
+      h("p", { class: "insight-claude-head" }, h("span", { class: "claude-star small", "aria-hidden": "true" }, "✦"),
+        list.length > 1 ? "Claude peut s'en charger pour " + list.length + " pages" : "Claude peut s'en charger"),
+      list.length === 1 ? panelOf(list[0]) : list.map(function (t) {
+        return h("details", { class: "insight-claude-item" }, h("summary", {}, t.title, fixChipFor(t)), panelOf(t));
+      }));
+  }
+  function fixChipFor(t) {
+    if (t.fix && t.fix.merged_at) return h("span", { class: "claude-chip ok" }, "✓ Corrigé");
+    if (fixToValidate(t)) return h("span", { class: "claude-chip wait" }, "● À valider");
+    return h("span", { class: "claude-chip" }, "✦ À corriger");
+  }
   function renderInsights(box, d, site) {
-    var o = d.overview, n = 0;
+    var o = d.overview, n = 0, slots = [];
     var cards = d.insights.map(function (i) {
-      var p = PRIO[i.priority] || PRIO.low;
+      var p = PRIO[i.priority] || PRIO.low, slot = h("div");
       if (i.priority !== "good") n++;
+      slots.push([i, slot]);
       return h("article", { class: "card insight " + p[0] },
         h("div", { class: "insight-head" }, i.priority !== "good" ? h("span", { class: "insight-n", "aria-hidden": "true" }, n) : h("span", { class: "insight-n ok", "aria-hidden": "true" }, "✓"),
           h("div", {}, h("p", { class: "eyebrow", style: "margin:0 0 4px" }, p[1]), h("h3", {}, i.title))),
@@ -949,8 +968,15 @@
         i.chips.length ? h("div", { class: "chips small" }, i.chips.map(function (c) { return h("span", { class: "chip" }, c); })) : null,
         i.table ? h("div", { class: "table-wrap inner" }, h("table", {}, h("thead", {}, h("tr", {}, i.table.columns.map(function (c, k) { return h("th", { class: k && typeof i.table.rows[0][k] === "number" ? "num" : "" }, c); }))),
           h("tbody", {}, i.table.rows.map(function (r) { return h("tr", {}, r.map(function (v, k) { return h("td", { class: typeof v === "number" ? "num" : (k === 0 ? "url" : "") }, typeof v === "number" ? fmt(v, 1) : v); })); })))) : null,
-        i.action ? h("p", { class: "insight-action" }, "→ " + i.action) : null);
+        i.action ? h("p", { class: "insight-action" }, "→ " + i.action) : null, slot);
     });
+    if (ME && ME.autofix && d.project) {
+      api("/api/plan/" + encodeURIComponent(d.project)).then(function (plan) {
+        var tasks = {}, panels = {};
+        plan.tasks.forEach(function (t) { tasks[t.fingerprint] = t; });
+        slots.forEach(function (x) { fill(x[1], insightClaude(x[0], tasks, plan.repo, panels)); });
+      }).catch(function () {});
+    }
     var note = d.note ? h("div", { class: "card", style: "display:flex;gap:16px;align-items:center;flex-wrap:wrap;justify-content:space-between" }, h("p", { class: "note" }, d.note),
       !o.has_pages && o.impressions >= 50 ? h("button", { class: "btn btn-small", type: "button", onclick: function (e) {
         e.currentTarget.disabled = true; e.currentTarget.textContent = "Analyse en cours…";
@@ -962,8 +988,68 @@
       note, h("div", { class: "insights" }, cards)));
   }
 
+  // Conseil simple pour une requête, selon sa position, ses clics et s'il s'agit de la marque.
+  function brandOfSite(site) {
+    var host = site.indexOf("sc-domain:") === 0 ? site.slice(10) : site.replace(/^https?:\/\//, "").split("/")[0];
+    return host.replace(/^www\./, "").split(".")[0].toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+  function queryTip(x, brand) {
+    var pos = x.position || 99, isBrand = brand && x.query.toLowerCase().replace(/[^a-z0-9]/g, "").indexOf(brand) !== -1;
+    if (isBrand && pos > 1.5) return ["Marque : visez la 1re place", "wait", "C'est votre nom : sur ces recherches, les gens vous cherchent vous. Vous devriez être 1er. Une fiche Google Business Profile, des liens depuis vos réseaux sociaux et les annuaires, et des données « Organisation » sur l'accueil aident Google à vous reconnaître."];
+    if (isBrand) return ["Marque : parfait", "ok", "Vous êtes en tête sur votre nom. Surveillez simplement que ça dure."];
+    if (pos <= 3) return x.ctr < 0.1 ? ["Top 3 : titre à rendre attirant", "wait", "Vous êtes tout en haut, mais peu de gens cliquent. Rendez le titre et la description de la page plus engageants : bénéfice concret, chiffre, appel à l'action."]
+      : ["Excellent : à protéger", "ok", "Vous êtes dans les 3 premiers et les gens cliquent. Gardez la page à jour pour conserver la place."];
+    if (pos <= 10) return ["Page 1 : optimisez le titre", "go", "Vous êtes en page 1, mais pas encore dans le top 3, où se font la majorité des clics. Mettez cette requête au début du titre de la page, et enrichissez un peu le contenu (FAQ, exemples)."];
+    if (pos <= 20) return ["Page 2 : tout proche !", "go", "Vous êtes juste derrière la page 1 : quelques améliorations suffisent souvent. Ajoutez du contenu qui répond précisément à cette recherche et des liens vers la page depuis vos autres pages."];
+    if (pos <= 50) return ["Loin : enrichir la page", "far", "Google vous connaît sur ce sujet mais vous classe loin. Il faut une page plus complète et plus spécifique que celles des concurrents, et des liens vers elle."];
+    return ["Très loin : page dédiée à renforcer", "far", "Google vous montre très loin (au-delà de la 50e place). Pour cette recherche, il faut une page vraiment consacrée au sujet, riche et unique, puis la faire connaître (liens internes, blog, partenaires)."];
+  }
+  function queryHelp() {
+    return h("details", { class: "acc query-help" }, h("summary", {}, "💡 Comment lire ce tableau ?"),
+      h("div", { class: "query-help-body" },
+        h("p", {}, "Chaque ligne est une ", h("b", {}, "recherche tapée dans Google"), " pour laquelle votre site est apparu, sur les 28 derniers jours."),
+        h("dl", {},
+          h("dt", {}, "Clics"), h("dd", {}, "Le nombre de personnes qui ont cliqué sur votre site dans les résultats."),
+          h("dt", {}, "Impressions"), h("dd", {}, "Le nombre de fois où votre site s'est affiché dans les résultats, même sans clic. Beaucoup d'impressions = une vraie demande."),
+          h("dt", {}, "CTR"), h("dd", {}, "Le taux de clic : clics ÷ impressions. Vers 30 % en 1re position, 10 % en 3e, 2 à 3 % en bas de page 1."),
+          h("dt", {}, "Position"), h("dd", {}, "Votre place moyenne dans Google : 1 à 3 excellent, 4 à 10 page 1, 11 à 20 page 2 (tout proche), au-delà de 30 Google vous trouve moins pertinent que les concurrents."),
+          h("dt", {}, "Évolution"), h("dd", {}, "Les places gagnées (▲) ou perdues (▼) par rapport aux 4 semaines d'avant."),
+          h("dt", {}, "Conseil"), h("dd", {}, "Ce qu'il faut faire en priorité pour cette recherche. Cliquez sur une ligne pour voir son historique et le conseil détaillé.")),
+        h("p", { class: "note" }, "La bonne stratégie : repérer les recherches avec beaucoup d'impressions mais une mauvaise position, et renforcer la page correspondante.")));
+  }
+  var IMPACT_CLS = { fort: "pink", moyen: "blue", faible: "" };
+  function adviceCard(site) {
+    var out = h("div", { class: "advice-body" }), btn = h("button", { class: "btn btn-dark claude-go", type: "button" }, "✦ Obtenir mes conseils");
+    var card = h("section", { class: "claude-card advice-card" },
+      h("span", { class: "claude-spark s1", "aria-hidden": "true" }, "✦"), h("span", { class: "claude-spark s3", "aria-hidden": "true" }, "✦"),
+      h("div", { class: "claude-head" }, h("span", { class: "claude-star", "aria-hidden": "true" }, "✦"),
+        h("div", {}, h("h2", {}, "Conseils personnalisés"),
+          h("p", {}, "Claude analyse vos recherches Google, vos pages et votre audit, puis vous dit quoi faire, dans l'ordre, et pourquoi."))),
+      out, h("div", { class: "form-row" }, btn));
+    btn.onclick = function () {
+      btn.disabled = true; btn.textContent = "Claude analyse vos données…";
+      fill(out, h("div", { class: "fix-run" }, h("span", { class: "fix-spin", "aria-hidden": "true" }), h("p", { class: "fix-step" }, "Lecture de vos requêtes et de vos pages…")));
+      api("/api/positions/advice", { site: site }).then(function (r) {
+        btn.hidden = true;
+        fill(out, h("p", { class: "advice-summary" }, r.summary),
+          h("ol", { class: "advice-list" }, r.advice.map(function (a, k) {
+            return h("li", { class: "advice-item", style: "--k:" + k },
+              h("div", { class: "advice-top" }, h("span", { class: "insight-n" }, k + 1), h("h3", {}, a.title)),
+              h("div", { class: "advice-tags" }, h("span", { class: "tag " + (IMPACT_CLS[a.impact] || "") }, "Impact " + a.impact), h("span", { class: "tag" }, "Effort " + a.effort)),
+              h("p", {}, a.why),
+              a.steps.length ? h("ol", { class: "advice-steps" }, a.steps.map(function (st) { return h("li", {}, st); })) : null,
+              a.page ? h("p", { class: "muted" }, "Page : ", h("a", { class: "url", href: a.page, target: "_blank", rel: "noopener noreferrer" }, a.page)) : null,
+              a.queries.length ? h("div", { class: "chips small" }, a.queries.slice(0, 8).map(function (q) { return h("span", { class: "chip" }, q); })) : null);
+          })),
+          h("p", { class: "note" }, "Analyse du " + fdate(r.date, true) + ". Elle se renouvelle chaque jour avec vos nouvelles données."));
+      }).catch(function (e) { btn.disabled = false; btn.textContent = "✦ Réessayer"; fill(out, errorBox(e)); });
+    };
+    return card;
+  }
+
   function renderPositions(box, d) {
     if (!d.last_date) { fill(box, emptyState("Pas encore de données", "Lancez un import pour cette propriété.", null)); return; }
+    var brand = brandOfSite(d.site);
     var q = d.queries, clicks = q.reduce(function (s, x) { return s + x.clicks; }, 0), imps = q.reduce(function (s, x) { return s + x.impressions; }, 0);
     var wpos = q.reduce(function (s, x) { return s + (x.position || 0) * x.impressions; }, 0) / (imps || 1);
     var state = { filter: "", sort: "impressions", dir: -1, view: "all" }, tbody = h("tbody"), hist = h("div");
@@ -979,9 +1065,10 @@
         var c = change(x);
         return h("tr", { class: "click", tabindex: 0, onclick: function () { showHistory(x.query); }, onkeydown: function (e) { if (e.key === "Enter") showHistory(x.query); } },
           h("td", {}, x.query), h("td", { class: "num" }, fmt(x.clicks)), h("td", { class: "num" }, fmt(x.impressions)), h("td", { class: "num" }, (x.ctr * 100).toFixed(1).replace(".", ",") + " %"),
-          h("td", { class: "num" }, h("b", {}, fmt(x.position, 1))), h("td", { class: "num" }, c == null ? h("span", { class: "muted" }, "nouveau") : delta(c) || h("span", { class: "muted" }, "=")));
+          h("td", { class: "num" }, h("b", {}, fmt(x.position, 1))), h("td", { class: "num" }, c == null ? h("span", { class: "muted" }, "nouveau") : delta(c) || h("span", { class: "muted" }, "=")),
+          h("td", {}, (function (tip) { return h("span", { class: "qtip " + tip[1] }, tip[0]); })(queryTip(x, brand))));
       }));
-      if (!f.length) tbody.append(h("tr", {}, h("td", { colspan: 6, class: "muted" }, "Aucune requête ne correspond.")));
+      if (!f.length) tbody.append(h("tr", {}, h("td", { colspan: 7, class: "muted" }, "Aucune requête ne correspond.")));
       renderHead();
     }
     var thead = h("thead");
@@ -989,11 +1076,13 @@
       return h("th", { class: num ? "num" : "", "aria-sort": state.sort === key ? (state.dir > 0 ? "ascending" : "descending") : "none" },
         h("button", { type: "button", class: "th-sort", onclick: function () { state.dir = state.sort === key ? -state.dir : -1; state.sort = key; render(); } }, label + (state.sort === key ? (state.dir > 0 ? " ↑" : " ↓") : "")));
     }
-    function renderHead() { fill(thead, h("tr", {}, th("Requête", "query"), th("Clics", "clicks", 1), th("Impr.", "impressions", 1), th("CTR", "ctr", 1), th("Position", "position", 1), th("Évolution", "change", 1))); }
+    function renderHead() { fill(thead, h("tr", {}, th("Requête", "query"), th("Clics", "clicks", 1), th("Impr.", "impressions", 1), th("CTR", "ctr", 1), th("Position", "position", 1), th("Évolution", "change", 1), h("th", {}, "Conseil"))); }
     function showHistory(query) {
+      var x = q.find(function (r) { return r.query === query; }), tip = x ? queryTip(x, brand) : null;
       fill(hist, h("div", { class: "card" }, h("span", { class: "spinner" })));
       api("/api/positions/history?site=" + encodeURIComponent(d.site) + "&query=" + encodeURIComponent(query)).then(function (rows) {
         fill(hist, h("div", { class: "card blue" }, h("h3", { style: "margin-bottom:14px" }, "« " + query + " » — position moyenne"),
+          tip ? h("p", { class: "qtip-long" }, h("span", { class: "qtip " + tip[1] }, tip[0]), " " + tip[2]) : null,
           lineChart(rows.map(function (r) { return { x: new Date(r.date), y: r.position }; }), { invert: true, height: 200, label: "Position de " + query }),
           h("p", { class: "note", style: "margin-top:8px" }, "Plus la courbe est haute, meilleure est la position (1 = premier résultat).")));
         hist.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1004,6 +1093,7 @@
     function renderViews() { fill(pills, views.map(function (v) { return h("button", { class: "pill", type: "button", "aria-pressed": String(state.view === v[0]), onclick: function () { state.view = v[0]; renderViews(); render(); } }, v[1]); })); }
     renderViews(); render();
     fill(box,
+      ME && ME.autofix ? adviceCard(d.site) : null,
       h("div", { class: "kpis" }, kpi(fmt(clicks), "clics sur " + d.days + " jours", "blue"), kpi(fmt(imps), "impressions"), kpi((clicks / (imps || 1) * 100).toFixed(1).replace(".", ",") + " %", "taux de clic"), kpi(fmt(wpos, 1), "position moyenne", "pink")),
       h("div", { class: "card", style: "margin-top:20px" }, h("h3", { style: "margin-bottom:12px" }, "Clics par jour"),
         lineChart(d.daily.map(function (r) { return { x: new Date(r.date), y: r.clicks }; }), { color: "#137445", height: 200, label: "Clics par jour" })),
@@ -1011,7 +1101,7 @@
       h("section", { class: "section", style: "margin-top:36px" }, h("header", {}, h("h2", {}, "Requêtes"), h("div", { class: "form-row" },
         h("input", { type: "search", placeholder: "Filtrer les requêtes", "aria-label": "Filtrer les requêtes", oninput: function (e) { state.filter = e.target.value; render(); } }),
         h("button", { class: "btn btn-small", type: "button", onclick: function () { csv([["requete", "clics", "impressions", "ctr", "position", "position precedente"]].concat(q.map(function (x) { return [x.query, x.clicks, x.impressions, x.ctr, x.position, x.previous_position]; })), "positions.csv"); } }, "Exporter CSV"))),
-        pills, h("div", { style: "height:16px" }),
+        queryHelp(), pills, h("div", { style: "height:16px" }),
         h("div", { class: "table-wrap" }, h("table", {}, thead, tbody))));
   }
 

@@ -784,3 +784,34 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
         other = str(c.execute("""insert into tasks (user_id, site, fingerprint, source, priority, title)
                                  values (%s,'monsite.fr','audit:http_4xx','audit','high','Erreurs 404') returning id""", (uid,)).fetchone()[0])
     assert client.post("/api/fixes", json={"task_id": other}, headers=h).status_code == 400
+
+
+def test_personalized_advice_cached_and_private(pg_dsn, monkeypatch):
+    from datetime import date, timedelta
+    from seo_audit.cloud import advisor
+    calls = []
+
+    def fake_advise(api_key, prompt, model=None):
+        calls.append(prompt)
+        return {"summary": "Priorité : la page tente.", "advice": [{"title": "Renforcer /tente", "why": "w", "steps": ["a"],
+                                                                     "queries": ["tente"], "page": "", "impact": "fort", "effort": "moyen"}]}
+    monkeypatch.setattr(advisor, "advise", fake_advise)
+    client = cloud_app.create_app(settings(pg_dsn, anthropic_api_key="sk")).test_client()
+    uid, h = new_user(pg_dsn)
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("insert into gsc_properties (user_id, site) values (%s, 'sc-domain:tentes.fr')", (uid,))
+        for d in range(1, 20):
+            c.execute("insert into gsc_daily values (%s,'sc-domain:tentes.fr',%s,'tente camping',1,40,.025,14)", (uid, date.today() - timedelta(days=d)))
+    r = client.post("/api/positions/advice", json={"site": "sc-domain:tentes.fr"}, headers=h).get_json()
+    assert r["advice"][0]["title"] == "Renforcer /tente" and r["cached"] is False
+    assert "tente camping" in calls[0] and "PROGRESSION" in calls[0]
+    assert client.post("/api/positions/advice", json={"site": "sc-domain:tentes.fr"}, headers=h).get_json()["cached"] is True
+    assert len(calls) == 1
+    _, bob = new_user(pg_dsn)
+    assert client.post("/api/positions/advice", json={"site": "sc-domain:tentes.fr"}, headers=bob).status_code == 404
+    off = cloud_app.create_app(settings(pg_dsn)).test_client()
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("delete from data_cache where key like 'advice:%%'")
+    assert off.post("/api/positions/advice", json={"site": "sc-domain:tentes.fr"}, headers=h).status_code == 503
+    ins = client.get("/api/positions/insights?site=sc-domain:tentes.fr", headers=h).get_json()
+    assert ins["project"] == "tentes.fr"

@@ -11,6 +11,7 @@ from functools import wraps
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anthropic
 import httpx
 from flask import Flask, Response, abort, g, jsonify, redirect, request, send_from_directory
 
@@ -764,7 +765,37 @@ def create_app(settings: Settings | None = None) -> Flask:
         recent = db.positions_summary(user_id(), site, 28)["queries"]
         query_pages, pages = db.gsc_pages_snapshot(user_id(), site)
         audit = db.latest_report_for_site(user_id(), property_site(site))
-        return jsonify(analyze(site, queries, query_pages, pages, audit, recent))
+        return jsonify({**analyze(site, queries, query_pages, pages, audit, recent), "project": property_site(site)})
+
+    @app.post("/api/positions/advice")
+    @authed
+    def positions_advice():
+        """Conseils personnalisés rédigés par Claude à partir des données du site (une analyse par jour et par propriété)."""
+        from datetime import date
+        from . import advisor
+        site = body().get("site", "")
+        if site not in {p["site"] for p in db.properties(user_id())}:
+            abort(404, "Propriété non suivie")
+        if not settings.anthropic_api_key:
+            abort(503, "Conseils personnalisés pas encore configurés")
+        key = f"advice:{user_id()}:{site}:{date.today().isoformat()}"
+        if (cached := db.cache_get(key, 1)) is not None:
+            return jsonify({**cached, "cached": True})
+        recent = db.positions_summary(user_id(), site, 28)["queries"]
+        if not recent:
+            abort(400, "Importez d'abord vos données Search Console")
+        query_pages, pages = db.gsc_pages_snapshot(user_id(), site)
+        audit = db.latest_report_for_site(user_id(), property_site(site))
+        found = analyze(site, db.positions_summary(user_id(), site, 90)["queries"], query_pages, pages, audit, recent)
+        try:
+            data = advisor.advise(settings.anthropic_api_key, advisor.build_prompt(site, recent, query_pages, audit, found["insights"]),
+                                  model=settings.anthropic_model or advisor.MODEL)
+        except (anthropic.APIError, ValueError) as exc:
+            log.warning("Conseils %s : %s", site, exc)
+            abort(502, "L'analyse n'a pas abouti, réessayez dans une minute")
+        data["date"] = date.today().isoformat()
+        db.cache_put(key, data)
+        return jsonify({**data, "cached": False})
 
     # -- plan d'action --------------------------------------------------------------------------
     def _analysis(prop: str, site: str, audit) -> dict:

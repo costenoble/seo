@@ -31,10 +31,29 @@ FIXABLE = {
     "audit:missing_lang": "Ajoute l'attribut lang sur la balise <html> (langue principale du site).",
     "audit:missing_viewport": "Ajoute la balise meta viewport (width=device-width, initial-scale=1).",
     "audit:missing_canonical": "Ajoute une balise canonical qui pointe vers l'URL de la page elle-même.",
-    "gsc:noindex-utility": "Ajoute une directive noindex (robots) sur ces pages de connexion, d'inscription ou de compte.",
+    "gsc:noindex-utility": "Ajoute une directive noindex (robots) sur ces pages de connexion, d'inscription ou de compte, "
+                           "sans toucher aux autres pages (les variantes ?tab=… partagent souvent le même fichier).",
+    "gsc:brand": "Le site n'est pas 1er sur son propre nom. Ajoute sur la page d'accueil (ou le gabarit commun) des données "
+                 "structurées JSON-LD Organization et WebSite : nom de la marque, url, logo (fichier existant du dépôt), et sameAs "
+                 "avec les liens de réseaux sociaux déjà présents dans le code. Vérifie que le title de l'accueil commence par la marque. "
+                 "N'ajoute aucun lien ou information absente des fichiers.",
+    "gsc:versions": "Google voit plusieurs versions du site (http/https, avec/sans www, autre domaine). Fais en sorte qu'une seule "
+                    "réponde : redirection permanente vers l'adresse principale dans la configuration fournie (middleware, vercel.json, "
+                    "netlify.toml, next.config, nuxt.config, .htaccess) et canonical absolue en https sur ce domaine. "
+                    "Si une redirection équivalente existe déjà, ne la duplique pas : complète seulement ce qui manque (ex. www).",
 }
-FIXABLE_PREFIXES = {"gsc:quick:": "Réécris le title et la meta description de cette page pour mieux correspondre aux "
-                                  "requêtes Google listées et donner envie de cliquer (title ≤ 60 caractères, description 120 à 160)."}
+FIXABLE_PREFIXES = {
+    "gsc:quick:": "Réécris le title et la meta description de cette page pour mieux correspondre aux requêtes Google listées "
+                  "et donner envie de cliquer (title ≤ 60 caractères, description 120 à 160).",
+    "gsc:potential:": "Cette page est vue par Google mais classée trop loin. Renforce-la pour les requêtes listées : title et "
+                      "description plus précis, une introduction qui répond directement à la requête principale, une FAQ de 4 à 6 "
+                      "questions concrètes du métier (avec JSON-LD FAQPage), et 2 ou 3 liens vers des pages proches existantes du site. "
+                      "Si le contenu vient d'un fichier de données (ex. lib/…), modifie l'entrée de CETTE page, pas le gabarit commun "
+                      "aux autres pages. N'invente ni chiffre, ni prix, ni témoignage, ni fonctionnalité absente des fichiers fournis.",
+}
+GLOBAL_TASKS = {"audit:missing_lang", "audit:missing_viewport", "gsc:versions"}  # fichiers communs, pas de page précise
+CONFIG_FILES = re.compile(r"^(src/)?(middleware\.(ts|js)|vercel\.json|netlify\.toml|public/_redirects|\.htaccess|public/\.htaccess|"
+                          r"next\.config\.(js|mjs|ts)|nuxt\.config\.(ts|js)|astro\.config\.(mjs|ts))$")
 
 
 class FixError(Exception):
@@ -110,16 +129,29 @@ _IMPORT = re.compile(r"import\s+(\w+)\s+from\s+['\"]([^'\"]+)['\"]|(?:const|let)
 
 
 def _resolve_import(spec: str, from_file: str, paths: set[str]) -> str | None:
-    if spec.startswith("@/"):
-        base = "src/" + spec[2:]
+    if spec.startswith(("@/", "~/")):
+        bases = ["src/" + spec[2:], spec[2:], "app/" + spec[2:]]
     elif spec.startswith("."):
-        base = posixpath.normpath(posixpath.join(posixpath.dirname(from_file), spec))
+        bases = [posixpath.normpath(posixpath.join(posixpath.dirname(from_file), spec))]
     else:
         return None
-    for ext in ("", ".jsx", ".tsx", ".js", ".ts", "/index.jsx", "/index.tsx", "/index.js", "/index.ts"):
-        if base + ext in paths:
-            return base + ext
+    for base in bases:
+        for ext in ("", ".jsx", ".tsx", ".js", ".ts", ".vue", "/index.jsx", "/index.tsx", "/index.js", "/index.ts"):
+            if base + ext in paths:
+                return base + ext
     return None
+
+
+def content_imports(text: str, page: str, paths: list[str], limit: int = 3) -> list[str]:
+    """Fichiers locaux importés par une page qui portent son contenu (données, gabarit de page) — pas les composants d'interface."""
+    pathset, out = set(paths), []
+    for m in re.finditer(r"""(?:import[^'"]*?from\s*|import\(\s*)['"]([^'"]+)['"]""", text):
+        target = _resolve_import(m.group(1), page, pathset)
+        if not target or target in out or re.search(r"(^|/)(ui|icons?|hooks?|styles?)/|\.(css|scss)$", target):
+            continue
+        out.append(target)
+    out.sort(key=lambda p: not re.search(r"(^|/)(lib|data|content|config|seo)/", p))  # données d'abord
+    return out[:limit]
 
 
 def _route_tags(text: str):
@@ -333,7 +365,7 @@ Règles :
 
 def ask_claude(api_key: str, task: dict, framework: str, pages: list[dict], files: dict[str, str], model: str = MODEL) -> dict:
     """pages : [{url, title, description, queries}] ; files : {chemin: contenu}."""
-    parts = [f"Technologie : {framework}", f"Problème : {task['title']}", f"Consigne : {task['instruction']}",
+    parts = [f"Technologie : {framework}", f"Site : {task.get('site_url') or ''}", f"Problème : {task['title']}", f"Consigne : {task['instruction']}",
              f"Détail : {task.get('detail') or ''}", "", "Pages concernées :"]
     for p in pages:
         parts.append(f"- {p['url']} | title actuel : {p.get('title') or '(inconnu)'} | description actuelle : {p.get('description') or '(inconnue)'}"
@@ -433,14 +465,21 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     report = db.latest_report_for_site(user_id, task["site"]) or {"pages": []}
     rows = {r["url"]: r for r in report.get("pages", [])}
     urls = list(dict.fromkeys(task.get("pages") or []))[:MAX_PAGES]
-    if task["fingerprint"] in ("audit:missing_lang", "audit:missing_viewport"):
+    if task["fingerprint"] in GLOBAL_TASKS:
         wanted, pages = root_files(framework, paths), []
+        if task["fingerprint"] == "gsc:versions":
+            wanted += [p for p in paths if CONFIG_FILES.match(p)]
+    elif task["fingerprint"] == "gsc:brand":
+        wanted, pages = locate(framework, paths, f"https://{task['site']}/", routes) + root_files(framework, paths), []
     else:
         wanted, pages = [], []
         for url in urls:
             found = locate(framework, paths, url, routes)
             if found:
                 wanted += found
+                if task["fingerprint"].startswith(("gsc:", "audit:title", "audit:description", "audit:duplicate")):
+                    page = repo.read(found[0], head)  # contenu des pages dynamiques : fichiers de données importés
+                    wanted += content_imports(page[0], found[0], paths) if page else []
                 pages.append({"url": url, "title": (rows.get(url) or {}).get("title"),
                               "queries": task.get("queries") or db.page_queries(user_id, task["site"], url)})
     wanted = list(dict.fromkeys(wanted))
@@ -455,7 +494,7 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     if not files:
         raise FixError("Fichiers trop volumineux pour une correction automatique")
 
-    plan = ask_claude(settings.anthropic_api_key, {**task, "instruction": instruction}, framework, pages, files,
+    plan = ask_claude(settings.anthropic_api_key, {**task, "instruction": instruction, "site_url": f"https://{task['site']}"}, framework, pages, files,
                       model=settings.anthropic_model or MODEL)
     changed = apply_plan(plan, files, set(paths))
     if not changed:
