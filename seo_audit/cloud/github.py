@@ -114,6 +114,14 @@ class Repo:
             body["sha"] = sha
         self._req("PUT", f"/contents/{path}", json=body)
 
+    def commit_branch(self, name: str, base_sha: str, files: dict[str, str], message: str) -> None:
+        """Crée la branche avec toutes les modifications en un seul commit (arbre Git basé sur base_sha)."""
+        base_tree = self._req("GET", f"/git/commits/{base_sha}")["tree"]["sha"]
+        tree = self._req("POST", "/git/trees", json={"base_tree": base_tree, "tree": [
+            {"path": path, "mode": "100644", "type": "blob", "content": content} for path, content in files.items()]})["sha"]
+        commit = self._req("POST", "/git/commits", json={"message": message, "tree": tree, "parents": [base_sha]})["sha"]
+        self._req("POST", "/git/refs", json={"ref": f"refs/heads/{name}", "sha": commit})
+
     def open_pr(self, title: str, head: str, base: str, body: str) -> dict:
         data = self._req("POST", "/pulls", json={"title": title, "head": head, "base": base, "body": body})
         return {"number": data["number"], "url": data["html_url"]}

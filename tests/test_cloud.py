@@ -648,8 +648,7 @@ class FakeRepo:
     def head_sha(self, branch): return "sha-main"
     def tree(self, sha): return list(self.files)
     def read(self, path, ref): return (self.files[path], "sha-" + path) if path in self.files else None
-    def create_branch(self, name, sha): self.log.append(("branch", name, sha))
-    def write(self, path, content, message, branch, sha): self.log.append(("write", path, content, branch, sha))
+    def commit_branch(self, name, base_sha, files, message): self.log.append(("commit", name, base_sha, files, message))
     def open_pr(self, title, head, base, body):
         self.log.append(("pr", title, head, base, body))
         return {"number": 7, "url": f"https://github.com/{self.full_name}/pull/7"}
@@ -690,7 +689,7 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
         seen.update(framework=framework, files=sorted(files), pages=pages, instruction=task["instruction"])
         return {"files": [{"path": "app/tarifs/page.tsx", "mode": "edit", "content": "",
                            "edits": [{"search": "title: 'Tarifs' }", "replace": "title: 'Tarifs', description: 'Nos offres.' }"}]}],
-                "pr_title": "Ajoute la meta description de /tarifs", "summary": "Description ajoutée sur /tarifs.",
+                "pr_title": "SEO : Ajoute la meta description de /tarifs", "summary": "Description ajoutée sur /tarifs.",
                 "changes": [{"page": "/tarifs", "before": "", "after": "Nos offres."}], "skipped_reason": ""}
     monkeypatch.setattr(fixer, "ask_claude", fake_claude)
 
@@ -737,11 +736,11 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
     assert r["status"] == "done" and r["pr_number"] == 7 and r["pr_url"].endswith("/pull/7")
     assert seen["framework"] == "next" and seen["files"] == ["app/layout.tsx", "app/tarifs/page.tsx"]
     assert seen["pages"][0]["url"] == "https://monsite.fr/tarifs" and "description" in seen["instruction"].lower()
-    kinds = [e[0] for e in FakeRepo.log]
-    assert kinds == ["branch", "write", "pr"]
-    write = FakeRepo.log[1]
-    assert write[1] == "app/tarifs/page.tsx" and "description: 'Nos offres.'" in write[2] and write[4] == "sha-app/tarifs/page.tsx"
-    assert FakeRepo.log[2][3] == "main" and "vigie-seo/" in FakeRepo.log[2][2]
+    assert [e[0] for e in FakeRepo.log] == ["commit", "pr"]
+    commit = FakeRepo.log[0]
+    assert commit[2] == "sha-main" and list(commit[3]) == ["app/tarifs/page.tsx"] and "description: 'Nos offres.'" in commit[3]["app/tarifs/page.tsx"]
+    assert commit[4] == "SEO : Ajoute la meta description de /tarifs"  # préfixe « SEO : » jamais doublé
+    assert FakeRepo.log[1][1] == commit[4] and FakeRepo.log[1][3] == "main" and FakeRepo.log[1][2].startswith("vigie-seo/")
     fix = client.get("/api/plan/monsite.fr", headers=h).get_json()["tasks"][0]["fix"]
     assert fix["status"] == "done" and fix["pr_number"] == 7 and fix["merged_at"] is None
 

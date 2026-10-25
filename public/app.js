@@ -669,7 +669,8 @@
   function viewSite(key) {
     loading();
     api("/api/sites/" + encodeURIComponent(key)).then(function (site) {
-      showFixFab(key);
+      var lastDone = site.audits.find(function (a) { return a.status === "done"; });
+      showFixFab(key, function () { if (lastDone) { sessionStorage.setItem("audit-claude", "1"); go("#/audit/" + lastDone.id); } });
       var audits = site.audits, done = audits.filter(function (a) { return a.status === "done"; }), last = done[0];
       if (!last) {
         var running = audits.find(function (a) { return a.status === "queued" || a.status === "running"; });
@@ -727,12 +728,48 @@
             : emptyState("Audit en cours", fmt(a.progress.done) + " pages explorées pour l'instant.", h("button", { class: "btn btn-dark", type: "button", onclick: function () { followAudit(id, a.site, function () { viewAudit(id); }); } }, "Suivre l'avancement")));
         return;
       }
-      return api("/api/audits/" + id + "/report").then(function (data) { renderAudit(id, a, data); showFixFab(a.site); });
+      return api("/api/audits/" + id + "/report").then(function (data) { renderAudit(id, a, data); });
     }).catch(fail);
   }
   function renderAudit(id, a, data) {
     var S = data.summary, issues = data.issues, site = a.site, slug = site.replace(/[^a-z0-9.-]/gi, "");
-    var state = { cat: "", sev: "", q: "" };
+    var state = { cat: "", sev: "", q: "", claude: false, open: {} };
+    // Corrections avec Claude : tâches du plan d'action liées aux problèmes de l'audit (audit:<code>)
+    var fix = { tasks: {}, repo: null, panels: {}, on: !!(ME && ME.autofix) };
+    var claudeEl = h("section", { class: "section claude-zone", id: "claude", hidden: true });
+    function fixTask(code) { var t = fix.tasks[code]; return t && t.fixable && (t.status === "todo" || (t.fix && t.fix.merged_at)) ? t : null; }
+    function fixChip(t) {
+      if (!t) return null;
+      var f = t.fix;
+      if (f && f.merged_at) return h("span", { class: "claude-chip ok" }, "✓ Corrigé par Claude");
+      if (fixToValidate(t)) return h("span", { class: "claude-chip wait" }, "● À valider");
+      return h("span", { class: "claude-chip" }, "✦ Claude peut corriger");
+    }
+    function drawClaude() {
+      var list = Object.keys(fix.tasks).map(fixTask).filter(Boolean);
+      if (!fix.on || !list.length) { claudeEl.hidden = true; return; }
+      claudeEl.hidden = false;
+      var todo = list.filter(fixPending), wait = list.filter(fixToValidate), ok = list.filter(function (t) { return t.fix && t.fix.merged_at; });
+      var allBtn = h("button", { class: "btn btn-green", type: "button" }, "✦ Tout corriger (" + todo.length + ")");
+      allBtn.hidden = !todo.length || !fix.repo;
+      allBtn.onclick = function () {
+        allBtn.disabled = true; state.claude = true; renderPills(); renderList();
+        todo.reduce(function (p, t) { return p.then(function () { return fix.panels[t.id] ? fix.panels[t.id].run() : null; }); }, Promise.resolve())
+          .then(function () { drawClaude(); });
+        listEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+      fill(claudeEl, h("div", { class: "claude-card" },
+        h("div", { class: "claude-head" }, h("span", { class: "fix-fab-star", "aria-hidden": "true" }, "✦"),
+          h("div", {}, h("h2", {}, "Claude corrige pour vous"),
+            h("p", { class: "muted" }, fix.repo ? "Dans votre dépôt " + fix.repo + ". Rien n'est publié sans votre validation." : "Associez le dépôt GitHub de ce site pour activer les corrections."))),
+        h("div", { class: "claude-stats" },
+          h("div", {}, h("b", {}, todo.length), h("span", {}, "à corriger")),
+          h("div", { class: wait.length ? "wait" : "" }, h("b", {}, wait.length), h("span", {}, "à valider")),
+          h("div", { class: ok.length ? "ok" : "" }, h("b", {}, ok.length), h("span", {}, "corrigés et publiés"))),
+        h("div", { class: "form-row" }, fix.repo ? null : h("a", { class: "btn btn-dark", href: "#/connexions" }, "Associer le dépôt GitHub"), allBtn,
+          h("button", { class: "btn", type: "button", onclick: function () { state.claude = true; state.cat = ""; renderPills(); renderList(); listEl.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+            wait.length ? "Valider les corrections (" + wait.length + ")" : "Voir les problèmes concernés"))));
+    }
     var pillsEl = h("div", { class: "pills", role: "group", "aria-label": "Filtrer par catégorie" });
     var listEl = h("div"), countEl = h("p", { class: "muted", "aria-live": "polite", style: "margin-bottom:14px" });
     var catCounts = {};
@@ -740,20 +777,29 @@
     function pill(label, value, n) {
       return h("button", { class: "pill", type: "button", "aria-pressed": String(state.cat === value), onclick: function () { state.cat = value; renderPills(); renderList(); } }, label, h("span", { class: "n" }, n));
     }
-    function renderPills() { fill(pillsEl, pill("Tous", "", issues.length), Object.keys(catCounts).map(function (c) { return pill(CAT_LABEL[c] || c, c, catCounts[c]); })); }
+    function renderPills() {
+      var n = issues.filter(function (i) { return fixTask(i.code); }).length;
+      var claudePill = n ? h("button", { class: "pill pill-claude", type: "button", "aria-pressed": String(state.claude), onclick: function () { state.claude = !state.claude; renderPills(); renderList(); } },
+        "✦ Corrigeables par Claude", h("span", { class: "n" }, n)) : null;
+      fill(pillsEl, claudePill, pill("Tous", "", issues.length), Object.keys(catCounts).map(function (c) { return pill(CAT_LABEL[c] || c, c, catCounts[c]); }));
+    }
     function renderList() {
       var term = state.q.toLowerCase();
       var f = issues.filter(function (i) {
-        return (!state.cat || i.category === state.cat) && (!state.sev || i.severity === state.sev) &&
+        return (!state.cat || i.category === state.cat) && (!state.sev || i.severity === state.sev) && (!state.claude || fixTask(i.code)) &&
           (!term || (i.url + " " + i.message + " " + i.detail).toLowerCase().indexOf(term) !== -1);
       });
       var groups = {};
-      f.forEach(function (i) { (groups[i.code] = groups[i.code] || { severity: i.severity, message: i.message.replace(/\s*\(.*\)$/, "").replace(/\s*:.*$/, ""), items: [] }).items.push(i); });
+      f.forEach(function (i) { (groups[i.code] = groups[i.code] || { code: i.code, severity: i.severity, message: i.message.replace(/\s*\(.*\)$/, "").replace(/\s*:.*$/, ""), items: [] }).items.push(i); });
       var arr = Object.values(groups).sort(function (x, y) { return SEV.indexOf(x.severity) - SEV.indexOf(y.severity) || y.items.length - x.items.length; });
       countEl.textContent = fmt(f.length) + " problème" + (f.length > 1 ? "s" : "") + " sur " + fmt(arr.length) + " type" + (arr.length > 1 ? "s" : "");
       fill(listEl, arr.length ? arr.map(function (g, idx) {
-        return h("details", { class: "acc", open: arr.length === 1 || (idx === 0 && !!state.cat) },
-          h("summary", {}, sevDot(g.severity), g.message, h("span", { class: "n" }, fmt(g.items.length))),
+        var t = fix.on ? fixTask(g.code) : null;
+        var panel = t ? (fix.panels[t.id] = fix.panels[t.id] || fixPanel(t, fix.repo, function () { drawClaude(); renderPills(); renderList(); })) : null;
+        var isOpen = g.code in state.open ? state.open[g.code] : arr.length === 1 || (idx === 0 && !!state.cat) || (state.claude && !!t);
+        return h("details", { class: "acc" + (t ? " fixable" : ""), open: isOpen ? "" : null, ontoggle: function (e) { state.open[g.code] = e.target.open; } },
+          h("summary", {}, sevDot(g.severity), g.message, fixChip(t), h("span", { class: "n" }, fmt(g.items.length))),
+          panel,
           h("ul", {}, g.items.slice(0, 100).map(function (i) {
             return h("li", {}, h("a", { class: "url", href: i.url, target: "_blank", rel: "noopener noreferrer" }, i.url), i.detail ? h("span", { class: "detail" }, i.detail) : null);
           }), g.items.length > 100 ? h("li", { class: "muted" }, "… et " + fmt(g.items.length - 100) + " autres (voir le CSV)") : null));
@@ -780,8 +826,18 @@
         h("div", { class: "grid" },
           h("details", { class: "acc", style: "align-self:start" }, h("summary", {}, h("span", { class: "dot", style: "background:var(--orange)" }), "Nouveaux problèmes", h("span", { class: "n" }, fmt(cmp.new_count))), changeList(cmp.new)),
           h("details", { class: "acc", style: "align-self:start" }, h("summary", {}, h("span", { class: "dot", style: "background:var(--green)" }), "Problèmes corrigés", h("span", { class: "n" }, fmt(cmp.fixed_count))), changeList(cmp.fixed)))) : null,
+      claudeEl,
       h("section", { class: "section" }, h("header", {}, h("h2", {}, "Tous les problèmes"), h("div", { class: "form-row" }, sevSel, search)),
         pillsEl, h("div", { style: "height:20px" }), countEl, listEl));
+    if (fix.on) {
+      api("/api/plan/" + encodeURIComponent(site)).then(function (d) {
+        d.tasks.forEach(function (t) { if (t.source === "audit") fix.tasks[t.fingerprint.replace(/^audit:/, "")] = t; });
+        fix.repo = d.repo; fix.on = d.autofix;
+        drawClaude(); renderPills(); renderList();
+        showFixFab(site, function () { claudeEl.scrollIntoView({ behavior: "smooth", block: "start" }); });
+        if (sessionStorage.getItem("audit-claude")) { sessionStorage.removeItem("audit-claude"); setTimeout(function () { claudeEl.scrollIntoView({ behavior: "smooth", block: "start" }); }, 300); }
+      }).catch(function () {});
+    }
   }
   function changeList(items) {
     return h("ul", {}, items.slice(0, 60).map(function (i) {
@@ -1137,128 +1193,104 @@
   /* ---------- vue : plan d'action ---------- */
   var PRIO_LABEL = { high: "Priorité haute", medium: "À prévoir", low: "À surveiller" };
   /* ---------- corrections automatiques avec Claude ---------- */
-  // Cadre d'une tâche corrigeable : bouton, étapes pendant la rédaction, lien vers la pull request.
-  // box.run() lance la correction et renvoie une promesse (utilisé par « Tout corriger »).
-  function fixBox(t, repo, onDone, reopen) {
-    var f = t.fix;
-    if (f && f.merged_at) {
-      var pub = h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
-        h("p", {}, "✓ Correction publiée le " + fdate(f.merged_at, true) + (f.summary ? " : " + f.summary : "")),
-        h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir sur GitHub ↗"));
-      pub.run = function () { return Promise.resolve(); };
-      return pub;
-    }
-    if (f && f.status === "done" && !f.closed_at) {
-      var ok = h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
-        h("p", {}, "Correction prête à valider" + (f.summary ? " : " + f.summary : "")),
-        h("button", { class: "btn btn-small btn-dark", type: "button", onclick: function () { fixReview(t, onDone, reopen); } }, "Relire et valider"),
-        h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "GitHub ↗"));
-      ok.run = function () { return Promise.resolve(); };
-      return ok;
-    }
-    if (!repo) return h("div", { class: "fix-box" }, h("p", { class: "muted" }, "Vigie SEO peut corriger ceci pour vous dans votre code."),
-      h("a", { class: "btn btn-small", href: "#/connexions" }, "Associer le dépôt GitHub"));
-    var box = h("div", { class: "fix-box" + (f && f.status !== "running" ? " " + f.status : "") });
-    function idle() {
-      var msg = !f ? h("p", { class: "muted" }, "Dépôt " + repo)
-        : f.closed_at ? h("p", { class: "muted" }, "Proposition refusée : rien n'a été modifié sur le site.")
-        : h("p", {}, (f.status === "skipped" ? "Rien à modifier : " : "Échec : ") + (f.error || ""));
-      fill(box, msg, h("button", { class: "btn btn-small btn-green", type: "button", onclick: function () { box.run(); } },
-        !f ? "✦ Corriger avec Claude" : f.closed_at ? "✦ Nouvelle proposition" : "Réessayer"));
-    }
-    box.run = function () {
-      var steps = ["Lecture du dépôt…", "Recherche des fichiers des pages…", "Claude rédige la correction…", "Ouverture de la pull request…"], i = 0;
-      var label = h("p", { class: "fix-step", "aria-live": "polite" }, steps[0]);
-      fill(box, h("span", { class: "fix-spin", "aria-hidden": "true" }), label);
-      box.className = "fix-box running";
-      var timer = setInterval(function () { if (i < steps.length - 1) label.textContent = steps[++i]; }, 6000);
-      return api("/api/fixes", { task_id: t.id }).then(function (r) {
-        clearInterval(timer);
-        t.fix = { status: r.status, pr_url: r.pr_url, pr_number: r.pr_number, summary: r.summary, error: r.error };
-        toast(r.status === "done" ? "Pull request ouverte ✓ Vérifiez-la puis fusionnez-la sur GitHub." : r.status === "skipped" ? "Rien à modifier dans le code" : "La correction a échoué", r.status === "done" ? "good" : r.status === "skipped" ? "" : "bad");
-        if (onDone) onDone();
-      }).catch(function (e) { clearInterval(timer); toast(e.message, "bad"); box.className = "fix-box"; f = t.fix; idle(); throw e; });
-    };
-    idle();
-    return box;
+  // Trois étapes toujours visibles : Claude rédige → vous validez → en ligne.
+  var FIX_STEPS = ["Claude rédige", "Vous validez", "En ligne"];
+  function fixStepper(current, allDone) {
+    return h("ol", { class: "fix-steps", "aria-label": "Étapes de la correction" }, FIX_STEPS.map(function (label, i) {
+      var st = allDone || i < current ? "done" : i === current ? "current" : "";
+      return h("li", { class: st, "aria-current": st === "current" ? "step" : null }, h("span", { class: "fix-num" }, st === "done" ? "✓" : String(i + 1)), label);
+    }));
   }
+  function fixPending(t) { var f = t.fix; return !f || f.closed_at || f.status === "failed" || f.status === "skipped"; }
+  function fixToValidate(t) { var f = t.fix; return f && f.status === "done" && !f.closed_at && !f.merged_at; }
 
-  // Relecture d'une correction : les modifications fichier par fichier, puis « Valider et publier » ou « Refuser ».
-  function fixReview(t, onDone, reopen) {
-    var f = t.fix, body = h("div", { class: "fix-review" }, h("p", { class: "muted" }, "Chargement des modifications…"));
-    var err = h("div"), actions = h("div", { class: "form-row", style: "justify-content:space-between" });
-    function back() { if (reopen) reopen(); else closeOverlay(); if (onDone) onDone(); }
-    modal("Relire la correction", [h("p", { class: "eyebrow" }, "Relire la correction"), h("h2", {}, t.title),
-      f.summary ? h("p", {}, f.summary) : null, body, err, actions]);
-    api("/api/fixes/" + f.id).then(function (r) {
-      if (r.pr.merged) { f.merged_at = f.merged_at || new Date().toISOString(); toast("Déjà publiée depuis GitHub", "good"); back(); return; }
-      if (r.pr.state === "closed") { f.closed_at = new Date().toISOString(); toast("Cette proposition a été fermée sur GitHub", ""); back(); return; }
-      fill(body, r.files.map(function (file) {
-        return h("details", { class: "diff", open: r.files.length <= 3 ? "" : null },
-          h("summary", {}, h("code", {}, file.path), h("span", { class: "diff-n" }, h("b", { class: "add" }, "+" + file.additions), h("b", { class: "del" }, "−" + file.deletions))),
-          h("pre", {}, (file.patch || "").split("\n").map(function (line) {
-            var c = line.startsWith("@@") ? "hunk" : line[0] === "+" ? "add" : line[0] === "-" ? "del" : "";
-            return h("span", { class: c }, line + "\n");
-          })));
-      }));
-      var mergeBtn = h("button", { class: "btn btn-green", type: "button" }, "✓ Valider et publier");
-      var closeBtn = h("button", { class: "btn danger", type: "button" }, "Refuser");
+  // Panneau de correction d'une tâche, affiché dans la page (audit, plan d'action).
+  // panel.run() lance la rédaction et renvoie une promesse (utilisé par « Tout corriger »).
+  function fixPanel(t, repo, onChange) {
+    var panel = h("div", { class: "fix-panel" }), busy = false;
+    function changed() { render(); if (onChange) onChange(); }
+    function render() {
+      var f = t.fix;
+      panel.className = "fix-panel";
+      if (!repo) {
+        fill(panel, fixStepper(0), h("p", {}, "Claude peut corriger ce problème directement dans le code de votre site."),
+          h("div", { class: "form-row" }, h("a", { class: "btn btn-small btn-dark", href: "#/connexions" }, "Associer le dépôt GitHub")));
+        return;
+      }
+      if (f && f.merged_at) {
+        panel.className = "fix-panel ok";
+        fill(panel, fixStepper(3, true), h("p", {}, h("b", {}, "✓ Corrigé et publié"), " le " + fdatetime(f.merged_at) + ". Votre site se met à jour dans quelques minutes ; le prochain audit le confirmera."),
+          f.summary ? h("p", { class: "muted" }, f.summary) : null,
+          h("div", { class: "form-row" }, h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir sur GitHub ↗")));
+        return;
+      }
+      if (fixToValidate(t)) { renderReview(); return; }
+      var msg = !f ? "Claude peut corriger ce problème directement dans le code de votre site (" + repo + ")."
+        : f.closed_at ? "Vous avez refusé la proposition : rien n'a été modifié. Claude peut en rédiger une autre."
+        : (f.status === "skipped" ? "Claude n'a rien trouvé à modifier : " : "La correction a échoué : ") + (f.error || "");
+      if (f && (f.status === "failed" || f.status === "skipped") && !f.closed_at) panel.className = "fix-panel bad";
+      fill(panel, fixStepper(0), h("p", {}, msg),
+        h("div", { class: "form-row" }, h("button", { class: "btn btn-small btn-green", type: "button", onclick: function () { panel.run(); } },
+          !f ? "✦ Corriger avec Claude" : f.closed_at ? "✦ Nouvelle proposition" : "✦ Réessayer")));
+    }
+    function renderReview() {
+      var f = t.fix, files = h("div", { class: "fix-files" }, h("p", { class: "muted" }, "Chargement des modifications…")), err = h("div");
+      var mergeBtn = h("button", { class: "btn btn-small btn-green", type: "button", disabled: "" }, "✓ Valider et publier");
+      var closeBtn = h("button", { class: "btn btn-small danger", type: "button" }, "Refuser");
+      panel.className = "fix-panel review";
+      fill(panel, fixStepper(1), h("p", {}, h("b", {}, "Correction prête : à vous de valider."), f.summary ? " " + f.summary : ""), files, err,
+        h("div", { class: "form-row" }, mergeBtn, closeBtn, h("a", { class: "btn btn-small btn-ghost-link", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "GitHub ↗")));
+      api("/api/fixes/" + f.id).then(function (r) {
+        if (r.pr.merged) { f.merged_at = new Date().toISOString(); t.status = "done"; changed(); return; }
+        if (r.pr.state === "closed") { f.closed_at = new Date().toISOString(); changed(); return; }
+        fill(files, r.files.map(function (file) {
+          return h("details", { class: "diff", open: r.files.length <= 2 ? "" : null },
+            h("summary", {}, h("code", {}, file.path), h("span", { class: "diff-n" }, h("b", { class: "add" }, "+" + file.additions), h("b", { class: "del" }, "−" + file.deletions))),
+            h("pre", {}, (file.patch || "").split("\n").map(function (line) {
+              return h("span", { class: line.startsWith("@@") ? "hunk" : line[0] === "+" ? "add" : line[0] === "-" ? "del" : "" }, line + "\n");
+            })));
+        }));
+        mergeBtn.disabled = false;
+      }).catch(function (e) { fill(files, errorBox(e)); });
       mergeBtn.onclick = function () {
         mergeBtn.disabled = closeBtn.disabled = true; mergeBtn.textContent = "Publication…"; fill(err);
         api("/api/fixes/" + f.id + "/merge", {}).then(function () {
           f.merged_at = new Date().toISOString(); t.status = "done";
-          toast("Publié ✓ Si votre hébergeur suit GitHub, c'est en ligne dans quelques minutes.", "good"); refreshMe(); back();
+          toast("Publié ✓ Votre site se met à jour dans quelques minutes.", "good"); changed();
         }).catch(function (e) { mergeBtn.disabled = closeBtn.disabled = false; mergeBtn.textContent = "✓ Valider et publier"; fill(err, errorBox(e)); });
       };
       closeBtn.onclick = function () {
         mergeBtn.disabled = closeBtn.disabled = true; fill(err);
         api("/api/fixes/" + f.id + "/close", {}).then(function () {
-          f.closed_at = new Date().toISOString(); toast("Proposition refusée, rien n'a été modifié", ""); back();
+          f.closed_at = new Date().toISOString(); toast("Proposition refusée, rien n'a été modifié", ""); changed();
         }).catch(function (e) { mergeBtn.disabled = closeBtn.disabled = false; fill(err, errorBox(e)); });
       };
-      fill(actions, h("div", { class: "form-row" }, mergeBtn, closeBtn),
-        h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir sur GitHub ↗"));
-      actions.after(h("p", { class: "note" }, "« Valider et publier » fusionne la pull request dans la branche " + r.pr.base +
-        " de votre dépôt. Si votre hébergeur se met à jour depuis GitHub, la modification est en ligne dans la foulée."));
-    }).catch(function (e) { fill(body, errorBox(e)); fill(actions, h("button", { class: "btn", type: "button", onclick: back }, "Fermer")); });
+    }
+    panel.run = function () {
+      if (busy || !repo) return Promise.resolve();
+      busy = true;
+      var steps = ["Lecture de votre dépôt…", "Recherche des fichiers des pages…", "Claude rédige la correction…", "Préparation de la proposition…"], i = 0;
+      var label = h("p", { class: "fix-step", "aria-live": "polite" }, steps[0]);
+      panel.className = "fix-panel running";
+      fill(panel, fixStepper(0), h("div", { class: "fix-run" }, h("span", { class: "fix-spin", "aria-hidden": "true" }), label));
+      var timer = setInterval(function () { if (i < steps.length - 1) label.textContent = steps[++i]; }, 6000);
+      return api("/api/fixes", { task_id: t.id }).then(function (r) {
+        t.fix = { id: r.id, status: r.status, pr_url: r.pr_url, pr_number: r.pr_number, summary: r.summary, error: r.error };
+        if (r.status === "done") toast("Correction prête ✓ Relisez-la puis validez.", "good");
+        refreshMe();
+      }).catch(function (e) { toast(e.message, "bad"); }).then(function () { clearInterval(timer); busy = false; changed(); });
+    };
+    render();
+    return panel;
   }
 
-  // Bouton flottant « Corriger avec Claude », sur les pages d'un projet dont le dépôt GitHub est associé.
+  // Bouton flottant « Corriger avec Claude » : mène aux problèmes que Claude sait corriger.
   var fab = h("button", { class: "fix-fab", type: "button", hidden: true }, h("span", { class: "fix-fab-star", "aria-hidden": "true" }, "✦"), h("span", {}, "Corriger avec Claude"));
   document.body.append(fab);
-  function showFixFab(site) {
+  function showFixFab(site, action) {
     fab.hidden = !(ME && ME.autofix && ME.repos && ME.repos[site]);
     document.body.classList.toggle("has-fab", !fab.hidden);
-    fab.onclick = function () { fixModal(site); };
-  }
-  function fixModal(site) {
-    var listBox = h("div", { class: "fix-list" }, h("p", { class: "muted" }, "Recherche de ce que Claude peut corriger…"));
-    var allBtn = h("button", { class: "btn btn-green", type: "button", hidden: true }, "✦ Tout corriger");
-    modal("Corriger avec Claude", [h("p", { class: "eyebrow" }, "Corriger avec Claude · " + site), h("h2", {}, "Ce que Claude peut corriger"),
-      h("p", { class: "note" }, "Chaque correction arrive en pull request dans " + ME.repos[site] + " : vous la relisez sur GitHub avant de la fusionner. Rien n'est publié tout seul."),
-      listBox, h("div", { class: "form-row", style: "justify-content:space-between" }, allBtn,
-        h("button", { class: "btn", type: "button", onclick: closeOverlay }, "Fermer"))]);
-    api("/api/plan/" + encodeURIComponent(site)).then(function (d) {
-      var tasks = d.tasks.filter(function (t) { return t.fixable && (t.status === "todo" || (t.fix && t.fix.merged_at)); });
-      function draw() {
-        if (!tasks.length) { fill(listBox, h("p", { class: "muted" }, "Rien à corriger automatiquement pour l'instant 🎉 Relancez un audit pour de nouvelles recommandations.")); allBtn.hidden = true; return; }
-        var boxes = [];
-        fill(listBox, tasks.map(function (t) {
-          var box = fixBox(t, d.repo, draw, function () { fixModal(site); }); boxes.push(box);
-          return h("article", { class: "fix-item" }, h("p", { class: "eyebrow", style: "margin:0" }, PRIO_LABEL[t.priority] || ""), h("h3", {}, t.title), box);
-        }));
-        var pending = function (t) { return !t.fix || t.fix.status !== "done" || t.fix.closed_at; };
-        var left = tasks.filter(pending).length;
-        allBtn.hidden = !left; allBtn.textContent = "✦ Tout corriger (" + left + ")";
-        allBtn.onclick = function () {
-          allBtn.disabled = true;
-          var queue = boxes.filter(function (b, i) { return pending(tasks[i]); });
-          queue.reduce(function (p, b) { return p.then(function () { return b.run().catch(function () {}); }); }, Promise.resolve())
-            .then(function () { allBtn.disabled = false; refreshMe(); });
-        };
-      }
-      draw();
-    }).catch(function (e) { fill(listBox, errorBox(e)); });
+    fab.onclick = action;
   }
 
   function viewPlan(key) {
@@ -1277,7 +1309,10 @@
       }).catch(fail);
       return;
     }
-    api("/api/plan/" + encodeURIComponent(key)).then(function (d) { renderPlan(key, d); showFixFab(key); }).catch(fail);
+    api("/api/plan/" + encodeURIComponent(key)).then(function (d) {
+      renderPlan(key, d);
+      showFixFab(key, function () { var p = main.querySelector(".fix-panel"); if (p) p.scrollIntoView({ behavior: "smooth", block: "center" }); });
+    }).catch(fail);
   }
   function renderPlan(key, d) {
     var state = { status: "todo", source: "" }, list = h("div", { class: "insights" }), pills = h("div", { class: "pills", role: "group", "aria-label": "Statut" });
@@ -1325,9 +1360,10 @@
           h("ul", {}, pages.slice(0, 30).map(function (u) { return h("li", {}, h("a", { class: "url", href: u, target: "_blank", rel: "noopener noreferrer" }, u)); }))) : null,
         fixView(t), impactView(t));
     }
+    var panels = {};
     function fixView(t) {
       if (!d.autofix || !t.fixable || !(t.status === "todo" || (t.fix && t.fix.merged_at))) return null;
-      return fixBox(t, d.repo, draw, function () { closeOverlay(); viewPlan(key); });
+      return panels[t.id] = panels[t.id] || fixPanel(t, d.repo, draw);
     }
     function draw() {
       var counts = { todo: 0, done: 0, ignored: 0 };

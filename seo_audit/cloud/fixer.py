@@ -419,11 +419,11 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     wanted = list(dict.fromkeys(wanted))
     if not wanted:
         raise FixError(f"Impossible de retrouver dans le dépôt les fichiers des pages concernées ({framework})")
-    files, shas, total = {}, {}, 0
+    files, total = {}, 0
     for path in wanted:
         got = repo.read(path, head)
         if got and len(got[0]) <= MAX_FILE_CHARS and total + len(got[0]) <= MAX_TOTAL_CHARS:
-            files[path], shas[path] = got
+            files[path] = got[0]
             total += len(got[0])
     if not files:
         raise FixError("Fichiers trop volumineux pour une correction automatique")
@@ -435,8 +435,7 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
         return {"status": "skipped", "error": plan.get("skipped_reason") or "Aucune modification nécessaire", "summary": plan.get("summary")}
 
     branch = branch_name(task["fingerprint"])
-    repo.create_branch(branch, head)
-    for path, content in changed.items():
-        repo.write(path, content, f"SEO : {plan['pr_title']}", branch, shas.get(path))
-    pr = repo.open_pr(plan["pr_title"] or task["title"], branch, base, pr_body(plan, task, pages, settings.app_url))
+    title = "SEO : " + re.sub(r"^\s*SEO\s*:\s*", "", plan.get("pr_title") or task["title"])
+    repo.commit_branch(branch, head, changed, title)
+    pr = repo.open_pr(title, branch, base, pr_body(plan, task, pages, settings.app_url))
     return {"status": "done", "pr_url": pr["url"], "pr_number": pr["number"], "branch": branch, "summary": plan.get("summary")}
