@@ -13,8 +13,9 @@ from urllib.parse import urlsplit
 import anthropic
 
 MODEL = "claude-haiku-5-5"  # rapide et économique ; ANTHROPIC_MODEL=claude-opus-5-5 pour les cas difficiles
-MAX_PAGES = 4               # pages par pull request : garde la requête courte et la relecture facile
+MAX_PAGES = 12              # pages par pull request : garde la requête courte et la relecture facile
 MAX_FILE_CHARS = 60_000     # au-delà, on ne confie pas le fichier à l'IA
+MAX_TOTAL_CHARS = 160_000   # ensemble des fichiers confiés à l'IA pour une correction
 PAGE_EXT = (".tsx", ".jsx", ".ts", ".js", ".mdx", ".md")
 
 # Tâches que Vigie SEO sait corriger, et la consigne correspondante pour l'IA
@@ -63,6 +64,8 @@ def detect_framework(paths: list[str], package_json: str | None) -> str:
         return "sveltekit"
     if "nuxt" in deps:
         return "nuxt"
+    if "react-router-dom" in deps or "react-router" in deps:
+        return "react"
     if any(p.endswith(".html") for p in paths):
         return "html"
     return "unknown"
@@ -99,10 +102,87 @@ def _match(pattern: list[str], parts: list[str]) -> int:
     return score
 
 
-def locate(framework: str, paths: list[str], url: str) -> list[str]:
+# React + react-router : les adresses sont déclarées dans le code (<Route path element>), pas dans l'arborescence
+ROUTER_FILE = re.compile(r"^(src/)?([\w-]+/)*(App|app|main|index|router|routes|Router|Routes)\.(jsx|tsx|js|ts)$")
+META_HELPER = re.compile(r"(^|/)([^/]*(seo|meta|helmet)[^/]*|head|Head)\.(jsx|tsx|js|ts)$", re.I)
+_ROUTE_OBJ = re.compile(r"\{[^{}]*?\bpath\s*:\s*['\"]([^'\"]+)['\"][^{}]*?\belement\s*:\s*<\s*(\w+)", re.S)
+_IMPORT = re.compile(r"import\s+(\w+)\s+from\s+['\"]([^'\"]+)['\"]|(?:const|let)\s+(\w+)\s*=\s*(?:React\.)?lazy\(\s*\(\)\s*=>\s*import\(\s*['\"]([^'\"]+)['\"]")
+
+
+def _resolve_import(spec: str, from_file: str, paths: set[str]) -> str | None:
+    if spec.startswith("@/"):
+        base = "src/" + spec[2:]
+    elif spec.startswith("."):
+        base = posixpath.normpath(posixpath.join(posixpath.dirname(from_file), spec))
+    else:
+        return None
+    for ext in ("", ".jsx", ".tsx", ".js", ".ts", "/index.jsx", "/index.tsx", "/index.js", "/index.ts"):
+        if base + ext in paths:
+            return base + ext
+    return None
+
+
+def _route_tags(text: str):
+    """Attributs de chaque balise <Route …> ; les « > » à l'intérieur des accolades (element={<Page />}) sont ignorés."""
+    for m in re.finditer(r"<Route\b", text):
+        depth, i = 0, m.end()
+        while i < len(text):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            elif ch == ">" and depth == 0:
+                break
+            i += 1
+        yield text[m.end():i]
+
+
+def meta_helpers(paths: list[str]) -> list[str]:
+    """Fichiers qui fabriquent les balises du <head> (suffixe de marque du title, valeurs par défaut)."""
+    found = [p for p in paths if p.startswith("src/") and META_HELPER.search(p)]
+    return sorted(found, key=lambda p: (not re.search(r"seo", p, re.I), p))[:3]
+
+
+def react_routes(paths: list[str], read) -> dict[str, str]:
+    """{chemin de route: fichier du composant} à partir des fichiers de routage (read(path) -> texte ou None)."""
+    pathset, routes = set(paths), {}
+    for f in [p for p in paths if ROUTER_FILE.match(p) and not p.startswith(("node_modules/", "dist/", "public/"))][:8]:
+        text = read(f) or ""
+        if "Route" not in text and "path:" not in text:
+            continue
+        imports = {}
+        for m in _IMPORT.finditer(text):
+            name, spec = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+            target = _resolve_import(spec, f, pathset)
+            if target:
+                imports[name] = target
+        pairs = []
+        for attrs in _route_tags(text):
+            path_m = re.search(r"\bpath\s*=\s*['\"{]+([^'\"}]+)", attrs)
+            el_m = re.search(r"\belement\s*=\s*\{\s*<\s*(\w+)", attrs)
+            if path_m and el_m:
+                pairs.append((path_m.group(1), el_m.group(1)))
+        pairs += _ROUTE_OBJ.findall(text)
+        for route, comp in pairs:
+            if comp in imports and route != "*":
+                routes.setdefault("/" + route.strip("/"), imports[comp])
+    return routes
+
+
+def locate(framework: str, paths: list[str], url: str, routes: dict[str, str] | None = None) -> list[str]:
     """Fichiers à fournir à l'IA pour une URL : la page et les gabarits qui définissent ses métadonnées."""
     parts = [p for p in (urlsplit(url).path or "/").strip("/").split("/") if p]
     best, files = (0, None), []
+    if framework == "react":
+        for route, f in (routes or {}).items():
+            seg = ["[" + x[1:] + "]" if x.startswith(":") else "[...rest]" if x == "*" else x for x in route.strip("/").split("/") if x]
+            score = _match(seg, parts)
+            if score > best[0]:
+                best = (score, f)
+        if best[1]:
+            return [best[1]] + meta_helpers(paths)
+        return []
     if framework == "next":
         for root in ("src/app/", "app/"):
             pages = [p for p in paths if p.startswith(root) and re.search(r"/page\.(tsx|jsx|ts|js|mdx)$", "/" + p)]
@@ -174,6 +254,8 @@ def root_files(framework: str, paths: list[str]) -> list[str]:
                            "pages/_document.tsx", "src/pages/_document.tsx", "pages/_document.jsx", "pages/_document.js"],
                   "astro": [p for p in paths if p.startswith("src/layouts/")][:3], "sveltekit": ["src/app.html"],
                   "html": ["index.html", "public/index.html"]}.get(framework, [])
+    if framework == "react":
+        candidates = ["index.html", "public/index.html"] + meta_helpers(paths)
     return [c for c in candidates if c in paths]
 
 
@@ -212,6 +294,10 @@ Règles :
 - Respecte le style du code (guillemets, indentation, conventions du framework). Ne change rien d'autre : ni logique, ni mise en page.
 - Rédige en français si le site est en français. Titles de 60 caractères au plus, meta descriptions de 120 à 160 caractères,
   sans bourrage de mots-clés, en t'appuyant sur les requêtes Google fournies quand il y en a.
+- Regarde si un fichier fourni ajoute automatiquement un suffixe ou un préfixe au title (ex. `${title} | Marque`) :
+  la limite de 60 caractères s'applique au title FINAL, suffixe compris, et ne répète pas la marque déjà présente
+  dans ce suffixe. Indique le title final dans "changes".
+- Traite toutes les pages listées dont le fichier est fourni.
 - Si tu ne peux pas corriger proprement (contenu chargé depuis un CMS, fichier introuvable, risque de casser le site),
   renvoie "files": [] et explique pourquoi dans "skipped_reason".
 - "pr_title" : titre court de la pull request, en français. "summary" : 2 ou 3 phrases pour le relecteur.
@@ -312,7 +398,10 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     pkg = repo.read("package.json", head) if "package.json" in paths else None
     framework = detect_framework(paths, pkg[0] if pkg else None)
     if framework in ("unknown", "nuxt"):
-        raise FixError("Technologie du site non prise en charge pour l'instant (Next.js, Astro, SvelteKit et HTML le sont)")
+        raise FixError("Technologie du site non prise en charge pour l'instant (Next.js, React, Astro, SvelteKit et HTML le sont)")
+    routes = None
+    if framework == "react":
+        routes = react_routes(paths, lambda p: (repo.read(p, head) or (None,))[0])
 
     report = db.latest_report_for_site(user_id, task["site"]) or {"pages": []}
     rows = {r["url"]: r for r in report.get("pages", [])}
@@ -322,7 +411,7 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     else:
         wanted, pages = [], []
         for url in urls:
-            found = locate(framework, paths, url)
+            found = locate(framework, paths, url, routes)
             if found:
                 wanted += found
                 pages.append({"url": url, "title": (rows.get(url) or {}).get("title"),
@@ -330,11 +419,12 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     wanted = list(dict.fromkeys(wanted))
     if not wanted:
         raise FixError(f"Impossible de retrouver dans le dépôt les fichiers des pages concernées ({framework})")
-    files, shas = {}, {}
+    files, shas, total = {}, {}, 0
     for path in wanted:
         got = repo.read(path, head)
-        if got and len(got[0]) <= MAX_FILE_CHARS:
+        if got and len(got[0]) <= MAX_FILE_CHARS and total + len(got[0]) <= MAX_TOTAL_CHARS:
             files[path], shas[path] = got
+            total += len(got[0])
     if not files:
         raise FixError("Fichiers trop volumineux pour une correction automatique")
 
