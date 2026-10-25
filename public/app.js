@@ -1889,12 +1889,12 @@
           o.detail ? h("p", { class: "note" }, o.detail) : null,
           o.actions ? h("div", { class: "form-row" }, o.actions) : null);
       }
-      var gsc = st.connected && st.gsc;
+      var gsc = st.connected && st.gsc, ghOn = gh.configured && gh.installations && gh.installations.length;
       var illus = svg("svg", { class: "conn-illus", viewBox: "0 0 420 160", "aria-hidden": "true" },
         svg("path", { class: "conn-line" + (gsc ? " on" : ""), d: "M210 80 C150 80 120 40 70 40" }),
         svg("path", { class: "conn-line" + (st.ga4 ? " on" : ""), d: "M210 80 C150 80 120 120 70 120" }),
-        svg("path", { class: "conn-line", d: "M210 80 C270 80 300 80 350 80" }),
-        svg("circle", { class: "conn-node" + (gsc ? " on" : ""), cx: 70, cy: 40, r: 18 }), svg("circle", { class: "conn-node" + (st.ga4 ? " on" : ""), cx: 70, cy: 120, r: 18 }), svg("circle", { class: "conn-node", cx: 350, cy: 80, r: 18 }));
+        svg("path", { class: "conn-line" + (ghOn ? " on" : ""), d: "M210 80 C270 80 300 80 350 80" }),
+        svg("circle", { class: "conn-node" + (gsc ? " on" : ""), cx: 70, cy: 40, r: 18 }), svg("circle", { class: "conn-node" + (st.ga4 ? " on" : ""), cx: 70, cy: 120, r: 18 }), svg("circle", { class: "conn-node" + (ghOn ? " on" : ""), cx: 350, cy: 80, r: 18 }));
       var center = eyeMark(76, "conn-eye");
       fill(main,
         h("section", { class: "hero", style: "margin-bottom:24px" }, h("p", { class: "eyebrow" }, "Connexions"), h("h1", {}, "Branchez vos outils."),
