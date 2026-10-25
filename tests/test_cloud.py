@@ -688,7 +688,7 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
 
     off = cloud_app.create_app(settings(pg_dsn)).test_client()
     client = cloud_app.create_app(settings(pg_dsn, anthropic_api_key="sk", github_app_id="1", github_private_key="pem",
-                                           github_app_slug="vigie-seo")).test_client()
+                                           github_app_slug="vigie-seo", github_client_id="gh-cid")).test_client()
     uid, h = new_user(pg_dsn)
     assert off.get("/api/github/status", headers=h).get_json()["configured"] is False
     st = client.get("/api/github/status", headers=h).get_json()
@@ -697,6 +697,8 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
     # retour de GitHub : redirection vers l'application, puis liaison vérifiée chez GitHub
     r = client.get("/api/github/callback?code=bon-code&installation_id=42&setup_action=install")
     assert r.status_code == 302 and r.headers["Location"] == "/#/connexions?github_code=bon-code&installation_id=42"
+    r = client.get("/api/github/callback?installation_id=42&setup_action=update")
+    assert r.status_code == 302 and r.headers["Location"].startswith("https://github.com/login/oauth/authorize?client_id=gh-cid")
     assert client.post("/api/github/link", json={"code": "faux"}, headers=h).status_code == 502
     assert client.post("/api/github/link", json={"code": "bon-code"}, headers=h).get_json()["installations"][0]["account"] == "moi"
 

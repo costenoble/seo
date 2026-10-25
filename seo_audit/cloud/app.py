@@ -188,6 +188,10 @@ def create_app(settings: Settings | None = None) -> Flask:
         """Retour de GitHub après installation : on transmet le code à l'application, qui le valide connectée."""
         from urllib.parse import urlencode
         q = {k: request.args.get(k, "") for k in ("code", "installation_id", "setup_action")}
+        if not q["code"] and settings.github_client_id:
+            # mise à jour d'une installation existante : GitHub n'envoie pas toujours de code, on demande l'identification
+            return redirect("https://github.com/login/oauth/authorize?" + urlencode(
+                {"client_id": settings.github_client_id, "redirect_uri": f"{settings.app_url}/api/github/callback"}))
         return redirect("/#/connexions?" + urlencode({"github_code": q["code"], "installation_id": q["installation_id"]}))
 
     @app.post("/api/github/link")
