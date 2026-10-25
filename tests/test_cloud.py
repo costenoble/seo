@@ -657,7 +657,7 @@ class FakeRepo:
         return {"state": FakeRepo.state, "merged": FakeRepo.state == "merged", "mergeable": True, "title": "Titre",
                 "url": "u", "head": "h", "base": "main"}
     def pull_files(self, number): return [{"path": "app/tarifs/page.tsx", "status": "modified", "additions": 1, "deletions": 1, "patch": "@@ -1 +1 @@\n-a\n+b"}]
-    def merge(self, number, title): self.log.append(("merge", number)); FakeRepo.state = "merged"
+    def merge(self, number, title): self.log.append(("merge", number)); FakeRepo.state = "merged"; return "abc1234def"
     def close_pr(self, number): self.log.append(("close", number)); FakeRepo.state = "closed"
     def delete_branch(self, name): self.log.append(("delete", name))
 
@@ -751,7 +751,8 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
     assert client.get(f"/api/fixes/{fix['id']}", headers=bob).status_code == 404
     assert client.post(f"/api/fixes/{fix['id']}/merge", headers=bob, json={}).status_code == 404
     FakeRepo.log = []
-    assert client.post(f"/api/fixes/{fix['id']}/merge", headers=h, json={}).get_json()["merged"]
+    r = client.post(f"/api/fixes/{fix['id']}/merge", headers=h, json={}).get_json()
+    assert r["merged"] and r["commit"] == "abc1234" and r["commit_url"] == "https://github.com/moi/site/commit/abc1234def"
     assert [e[0] for e in FakeRepo.log] == ["merge", "delete"]
     t = client.get("/api/plan/monsite.fr", headers=h).get_json()["tasks"][0]
     assert t["status"] == "done" and t["fix"]["merged_at"]

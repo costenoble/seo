@@ -115,7 +115,8 @@ def create_app(settings: Settings | None = None) -> Flask:
     def config():
         return jsonify(app_name=APP_NAME, supabase_url=settings.supabase_url,
                        supabase_anon_key=settings.supabase_anon_key, google_scope=google.SCOPE,
-                       plans=PLANS, missing=settings.missing())
+                       plans=PLANS, missing=settings.missing(),
+                       version=(os.environ.get("VERCEL_GIT_COMMIT_SHA") or "dev")[:12])
 
     @app.route("/api/worker/tick", methods=["GET", "POST"])
     def tick():
@@ -328,13 +329,13 @@ def create_app(settings: Settings | None = None) -> Flask:
     def fix_merge(fix_id):
         """Validation par l'utilisateur : fusion de la pull request, la tâche passe en « faite » (mesure de l'effet)."""
         fix = _own_fix(fix_id)
-        repo = _fix_repo(fix)
+        repo, sha = _fix_repo(fix), None
         try:
             pr = repo.pull(fix["pr_number"])
             if not pr["merged"]:
                 if pr["state"] != "open":
                     abort(409, "Cette pull request a été fermée sur GitHub")
-                repo.merge(fix["pr_number"], pr["title"])
+                sha = repo.merge(fix["pr_number"], pr["title"])
         except GitHubError as exc:
             if " 405 " in str(exc) or " 409 " in str(exc):
                 abort(409, "GitHub refuse la fusion (conflit avec d'autres modifications ou vérifications en échec). "
@@ -346,7 +347,8 @@ def create_app(settings: Settings | None = None) -> Flask:
             repo.delete_branch(fix["branch"])
         except GitHubError:
             pass
-        return jsonify(merged=True)
+        return jsonify(merged=True, commit=sha and sha[:7], commit_url=sha and f"https://github.com/{fix['repo']}/commit/{sha}",
+                       base=pr["base"], repo=fix["repo"])
 
     @app.post("/api/fixes/<fix_id>/close")
     @authed

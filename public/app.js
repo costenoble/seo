@@ -365,11 +365,11 @@
     })();
   }
 
-  function confirmDialog(title, text, okLabel) {
+  function confirmDialog(title, text, okLabel, okClass) {
     return new Promise(function (resolve) {
       function done(v) { closeOverlay(); resolve(v); }
-      modal(title, [h("p", { class: "eyebrow" }, "Confirmation"), h("h2", {}, title), h("p", { class: "muted" }, text),
-        h("div", { class: "form-row" }, h("button", { class: "btn danger-fill", type: "button", onclick: function () { done(true); } }, okLabel || "Supprimer"),
+      modal(title, [h("p", { class: "eyebrow" }, "Confirmation"), h("h2", {}, title), typeof text === "string" ? h("p", { class: "muted" }, text) : text,
+        h("div", { class: "form-row" }, h("button", { class: "btn " + (okClass || "danger-fill"), type: "button", onclick: function () { done(true); } }, okLabel || "Supprimer"),
           h("button", { class: "btn", type: "button", onclick: function () { done(false); } }, "Annuler"))]);
     });
   }
@@ -1219,9 +1219,10 @@
       }
       if (f && f.merged_at) {
         panel.className = "fix-panel ok";
-        fill(panel, fixStepper(3, true), h("p", {}, h("b", {}, "✓ Corrigé et publié"), " le " + fdatetime(f.merged_at) + ". Votre site se met à jour dans quelques minutes ; le prochain audit le confirmera."),
+        fill(panel, fixStepper(3, true), h("p", {}, h("b", {}, "✓ Publié sur GitHub"), " le " + fdatetime(f.merged_at) + (f.commit ? " (commit " + f.commit + ")" : "") +
+            ". Votre site se met à jour dans quelques minutes ; le prochain audit le confirmera."),
           f.summary ? h("p", { class: "muted" }, f.summary) : null,
-          h("div", { class: "form-row" }, h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir sur GitHub ↗")));
+          h("div", { class: "form-row" }, h("a", { class: "btn btn-small", href: f.commit_url || f.pr_url, target: "_blank", rel: "noopener noreferrer" }, f.commit_url ? "Voir le commit publié ↗" : "Voir sur GitHub ↗")));
         return;
       }
       if (fixToValidate(t)) { renderReview(); return; }
@@ -1253,11 +1254,20 @@
         mergeBtn.disabled = false;
       }).catch(function (e) { fill(files, errorBox(e)); });
       mergeBtn.onclick = function () {
-        mergeBtn.disabled = closeBtn.disabled = true; mergeBtn.textContent = "Publication…"; fill(err);
-        api("/api/fixes/" + f.id + "/merge", {}).then(function () {
-          f.merged_at = new Date().toISOString(); t.status = "done";
-          toast("Publié ✓ Votre site se met à jour dans quelques minutes.", "good"); changed();
-        }).catch(function (e) { mergeBtn.disabled = closeBtn.disabled = false; mergeBtn.textContent = "✓ Valider et publier"; fill(err, errorBox(e)); });
+        confirmDialog("Publier cette correction sur GitHub ?",
+          h("div", { style: "display:grid;gap:10px" },
+            h("p", {}, "La modification sera fusionnée dans la branche principale de ", h("b", {}, repo), " : c'est l'équivalent du bouton « Merge » de GitHub."),
+            h("p", { class: "muted" }, "Si votre hébergeur suit GitHub (Vercel, Netlify, Hostinger…), le site est mis à jour dans les minutes qui suivent. Vous pourrez revenir en arrière depuis GitHub (« Revert »).")),
+          "✓ Oui, publier", "btn-green").then(function (ok) {
+          if (!ok) return;
+          mergeBtn.disabled = closeBtn.disabled = true; mergeBtn.textContent = "Publication sur GitHub…"; fill(err);
+          api("/api/fixes/" + f.id + "/merge", {}).then(function (r) {
+            f.merged_at = new Date().toISOString(); f.commit = r.commit; f.commit_url = r.commit_url; t.status = "done";
+            toast("✓ Publié sur GitHub" + (r.commit ? " (commit " + r.commit + ")" : "") + ". Votre site se met à jour dans quelques minutes.", "good");
+            changed();
+            panel.scrollIntoView({ behavior: "smooth", block: "center" });
+          }).catch(function (e) { mergeBtn.disabled = closeBtn.disabled = false; mergeBtn.textContent = "✓ Valider et publier"; fill(err, errorBox(e)); });
+        });
       };
       closeBtn.onclick = function () {
         mergeBtn.disabled = closeBtn.disabled = true; fill(err);
@@ -2261,7 +2271,19 @@
     if (item) { el.href = item[1]; fill(el, h("span", { class: "dot-live", "aria-hidden": "true" }), item[2]); }
     else fill(el, h("span", { class: "dot-live", "aria-hidden": "true" }), currentSection === "account" ? "Mon compte" : "Vigie SEO");
   }
+  // Nouvelle version en ligne : on recharge l'application au prochain changement de page (ou au retour sur l'onglet).
+  var versionCheckedAt = Date.now();
+  function checkVersion() {
+    if (!CONFIG || !CONFIG.version || Date.now() - versionCheckedAt < 60000) return;
+    versionCheckedAt = Date.now();
+    fetch("/api/config", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (c) {
+      if (c.version && c.version !== CONFIG.version && overlay.hidden) location.reload();
+    }).catch(function () {});
+  }
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) checkVersion(); });
+
   function route() {
+    checkVersion();
     var hash = location.hash.replace(/^#\/?/, ""), qs = new URLSearchParams(hash.split("?")[1] || "");
     var parts = hash.split("?")[0].split("/").map(decodeURIComponent), name = parts[0] || "home";
     closeOverlay(); closeMenu(); fab.hidden = true; document.body.classList.remove("has-fab");

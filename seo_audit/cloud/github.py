@@ -136,9 +136,9 @@ class Repo:
         return [{"path": f["filename"], "status": f["status"], "additions": f["additions"], "deletions": f["deletions"],
                  "patch": f.get("patch", "")} for f in self._req("GET", f"/pulls/{number}/files", params={"per_page": 100})]
 
-    def merge(self, number: int, title: str) -> None:
-        """Fusion en un seul commit (squash) dans la branche principale."""
-        self._req("PUT", f"/pulls/{number}/merge", json={"merge_method": "squash", "commit_title": f"{title} (#{number})"})
+    def merge(self, number: int, title: str) -> str:
+        """Fusion en un seul commit (squash) dans la branche principale ; renvoie le sha du commit publié."""
+        return self._req("PUT", f"/pulls/{number}/merge", json={"merge_method": "squash", "commit_title": f"{title} (#{number})"}).get("sha", "")
 
     def close_pr(self, number: int) -> None:
         self._req("PATCH", f"/pulls/{number}", json={"state": "closed"})

@@ -134,8 +134,9 @@ input[type="search"] { min-width: 240px; }
 .cmp td:first-child, .cmp th:first-child { position: sticky; left: 0; background: var(--paper); }
 
 /* superposition (nouvel audit, tâches) */
-#overlay { position: fixed; inset: 0; z-index: 40; background: rgba(11,11,11,.55); display: grid; place-items: center; padding: 16px; overflow: auto; }
-.modal { background: var(--cream); border-radius: var(--r-lg); padding: clamp(24px, 4vw, 40px); width: min(560px, 100%); display: grid; gap: 20px; }
+#overlay { position: fixed; inset: 0; z-index: 65; background: rgba(11,11,11,.55); display: flex; padding: 16px; overflow: auto; }
+#overlay[hidden] { display: none; }
+.modal { background: var(--cream); border-radius: var(--r-lg); padding: clamp(24px, 4vw, 40px); width: min(620px, 100%); display: grid; gap: 20px; margin: auto; }
 .log { background: #0b0b0b; color: #d9d3cf; font: 12px/1.6 ui-monospace, Menlo, monospace; border-radius: var(--r-md); padding: 14px 16px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .spinner { width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--ink); animation: spin .8s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
