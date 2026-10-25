@@ -678,7 +678,7 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
                       "app/tarifs/page.tsx": "export const metadata = { title: 'Tarifs' }\nexport default function P() { return null }"}
     seen = {}
 
-    def fake_claude(api_key, task, framework, pages, files):
+    def fake_claude(api_key, task, framework, pages, files, model=None):
         seen.update(framework=framework, files=sorted(files), pages=pages, instruction=task["instruction"])
         return {"files": [{"path": "app/tarifs/page.tsx", "mode": "edit", "content": "",
                            "edits": [{"search": "title: 'Tarifs' }", "replace": "title: 'Tarifs', description: 'Nos offres.' }"}]}],

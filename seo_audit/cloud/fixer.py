@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 import anthropic
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-haiku-5-5"  # rapide et économique ; ANTHROPIC_MODEL=claude-opus-5-5 pour les cas difficiles
 MAX_PAGES = 4               # pages par pull request : garde la requête courte et la relecture facile
 MAX_FILE_CHARS = 60_000     # au-delà, on ne confie pas le fichier à l'IA
 PAGE_EXT = (".tsx", ".jsx", ".ts", ".js", ".mdx", ".md")
@@ -218,7 +218,7 @@ Règles :
   "changes" : pour chaque page, la valeur avant et après (title, description…)."""
 
 
-def ask_claude(api_key: str, task: dict, framework: str, pages: list[dict], files: dict[str, str]) -> dict:
+def ask_claude(api_key: str, task: dict, framework: str, pages: list[dict], files: dict[str, str], model: str = MODEL) -> dict:
     """pages : [{url, title, description, queries}] ; files : {chemin: contenu}."""
     parts = [f"Technologie : {framework}", f"Problème : {task['title']}", f"Consigne : {task['instruction']}",
              f"Détail : {task.get('detail') or ''}", "", "Pages concernées :"]
@@ -229,14 +229,13 @@ def ask_claude(api_key: str, task: dict, framework: str, pages: list[dict], file
     for path, content in files.items():
         parts.append(f'<file path="{path}">\n{content}\n</file>')
     client = anthropic.Anthropic(api_key=api_key, timeout=55, max_retries=1)
+    request = dict(model=model, max_tokens=16000, system=SYSTEM, messages=[{"role": "user", "content": "\n".join(parts)}],
+                   output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}})
     try:
-        # Repli côté serveur : si le modèle refuse, une autre version de Claude reprend la même demande.
-        response = client.beta.messages.create(
-            model=MODEL, max_tokens=16000, system=SYSTEM,
-            messages=[{"role": "user", "content": "\n".join(parts)}],
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-        )
+        if model.startswith("claude-haiku"):  # Haiku n'a pas de repli côté serveur
+            response = client.messages.create(**request)
+        else:  # repli côté serveur : si le modèle refuse, une autre version de Claude reprend la même demande
+            response = client.beta.messages.create(**request, betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     except anthropic.RateLimitError as exc:
         raise FixError("Service d'IA saturé, réessayez dans une minute") from exc
     except anthropic.APIStatusError as exc:
@@ -339,7 +338,8 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     if not files:
         raise FixError("Fichiers trop volumineux pour une correction automatique")
 
-    plan = ask_claude(settings.anthropic_api_key, {**task, "instruction": instruction}, framework, pages, files)
+    plan = ask_claude(settings.anthropic_api_key, {**task, "instruction": instruction}, framework, pages, files,
+                      model=settings.anthropic_model or MODEL)
     changed = apply_plan(plan, files, set(paths))
     if not changed:
         return {"status": "skipped", "error": plan.get("skipped_reason") or "Aucune modification nécessaire", "summary": plan.get("summary")}

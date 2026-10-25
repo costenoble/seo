@@ -34,6 +34,7 @@ class Settings:
     smtp_password: str = ""
     app_url: str = "https://vigie-seo.vercel.app"
     anthropic_api_key: str = ""          # rédaction des corrections automatiques — facultatif
+    anthropic_model: str = ""            # par défaut claude-haiku-5-5 (voir fixer.MODEL)
     github_app_id: str = ""              # application GitHub « Vigie SEO » — facultatif
     github_app_slug: str = ""
     github_client_id: str = ""
@@ -67,6 +68,7 @@ class Settings:
             smtp_password=env("SMTP_PASSWORD", ""),
             app_url=env("APP_URL", "https://vigie-seo.vercel.app").rstrip("/"),
             anthropic_api_key=env("ANTHROPIC_API_KEY", ""),
+            anthropic_model=env("ANTHROPIC_MODEL", ""),
             github_app_id=env("GITHUB_APP_ID", ""),
             github_app_slug=env("GITHUB_APP_SLUG", ""),
             github_client_id=env("GITHUB_CLIENT_ID", ""),
