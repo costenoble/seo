@@ -669,6 +669,7 @@
   function viewSite(key) {
     loading();
     api("/api/sites/" + encodeURIComponent(key)).then(function (site) {
+      showFixFab(key);
       var audits = site.audits, done = audits.filter(function (a) { return a.status === "done"; }), last = done[0];
       if (!last) {
         var running = audits.find(function (a) { return a.status === "queued" || a.status === "running"; });
@@ -726,7 +727,7 @@
             : emptyState("Audit en cours", fmt(a.progress.done) + " pages explorées pour l'instant.", h("button", { class: "btn btn-dark", type: "button", onclick: function () { followAudit(id, a.site, function () { viewAudit(id); }); } }, "Suivre l'avancement")));
         return;
       }
-      return api("/api/audits/" + id + "/report").then(function (data) { renderAudit(id, a, data); });
+      return api("/api/audits/" + id + "/report").then(function (data) { renderAudit(id, a, data); showFixFab(a.site); });
     }).catch(fail);
   }
   function renderAudit(id, a, data) {
@@ -1135,6 +1136,79 @@
 
   /* ---------- vue : plan d'action ---------- */
   var PRIO_LABEL = { high: "Priorité haute", medium: "À prévoir", low: "À surveiller" };
+  /* ---------- corrections automatiques avec Claude ---------- */
+  // Cadre d'une tâche corrigeable : bouton, étapes pendant la rédaction, lien vers la pull request.
+  // box.run() lance la correction et renvoie une promesse (utilisé par « Tout corriger »).
+  function fixBox(t, repo, onDone) {
+    var f = t.fix;
+    if (f && f.status === "done") {
+      var ok = h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
+        h("p", {}, "Correction proposée" + (f.summary ? " : " + f.summary : "")),
+        h("a", { class: "btn btn-small btn-dark", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir la pull request #" + f.pr_number + " ↗"));
+      ok.run = function () { return Promise.resolve(); };
+      return ok;
+    }
+    if (!repo) return h("div", { class: "fix-box" }, h("p", { class: "muted" }, "Vigie SEO peut corriger ceci pour vous dans votre code."),
+      h("a", { class: "btn btn-small", href: "#/connexions" }, "Associer le dépôt GitHub"));
+    var box = h("div", { class: "fix-box" + (f && f.status !== "running" ? " " + f.status : "") });
+    function idle() {
+      fill(box, f && (f.status === "failed" || f.status === "skipped") ? h("p", {}, (f.status === "skipped" ? "Rien à modifier : " : "Échec : ") + (f.error || "")) : h("p", { class: "muted" }, "Dépôt " + repo),
+        h("button", { class: "btn btn-small btn-green", type: "button", onclick: function () { box.run(); } }, f ? "Réessayer" : "✦ Corriger avec Claude"));
+    }
+    box.run = function () {
+      var steps = ["Lecture du dépôt…", "Recherche des fichiers des pages…", "Claude rédige la correction…", "Ouverture de la pull request…"], i = 0;
+      var label = h("p", { class: "fix-step", "aria-live": "polite" }, steps[0]);
+      fill(box, h("span", { class: "fix-spin", "aria-hidden": "true" }), label);
+      box.className = "fix-box running";
+      var timer = setInterval(function () { if (i < steps.length - 1) label.textContent = steps[++i]; }, 6000);
+      return api("/api/fixes", { task_id: t.id }).then(function (r) {
+        clearInterval(timer);
+        t.fix = { status: r.status, pr_url: r.pr_url, pr_number: r.pr_number, summary: r.summary, error: r.error };
+        toast(r.status === "done" ? "Pull request ouverte ✓ Vérifiez-la puis fusionnez-la sur GitHub." : r.status === "skipped" ? "Rien à modifier dans le code" : "La correction a échoué", r.status === "done" ? "good" : r.status === "skipped" ? "" : "bad");
+        if (onDone) onDone();
+      }).catch(function (e) { clearInterval(timer); toast(e.message, "bad"); box.className = "fix-box"; f = t.fix; idle(); throw e; });
+    };
+    idle();
+    return box;
+  }
+
+  // Bouton flottant « Corriger avec Claude », sur les pages d'un projet dont le dépôt GitHub est associé.
+  var fab = h("button", { class: "fix-fab", type: "button", hidden: true }, h("span", { class: "fix-fab-star", "aria-hidden": "true" }, "✦"), h("span", {}, "Corriger avec Claude"));
+  document.body.append(fab);
+  function showFixFab(site) {
+    fab.hidden = !(ME && ME.autofix && ME.repos && ME.repos[site]);
+    document.body.classList.toggle("has-fab", !fab.hidden);
+    fab.onclick = function () { fixModal(site); };
+  }
+  function fixModal(site) {
+    var listBox = h("div", { class: "fix-list" }, h("p", { class: "muted" }, "Recherche de ce que Claude peut corriger…"));
+    var allBtn = h("button", { class: "btn btn-green", type: "button", hidden: true }, "✦ Tout corriger");
+    modal("Corriger avec Claude", [h("p", { class: "eyebrow" }, "Corriger avec Claude · " + site), h("h2", {}, "Ce que Claude peut corriger"),
+      h("p", { class: "note" }, "Chaque correction arrive en pull request dans " + ME.repos[site] + " : vous la relisez sur GitHub avant de la fusionner. Rien n'est publié tout seul."),
+      listBox, h("div", { class: "form-row", style: "justify-content:space-between" }, allBtn,
+        h("button", { class: "btn", type: "button", onclick: closeOverlay }, "Fermer"))]);
+    api("/api/plan/" + encodeURIComponent(site)).then(function (d) {
+      var tasks = d.tasks.filter(function (t) { return t.fixable && t.status === "todo"; });
+      function draw() {
+        if (!tasks.length) { fill(listBox, h("p", { class: "muted" }, "Rien à corriger automatiquement pour l'instant 🎉 Relancez un audit pour de nouvelles recommandations.")); allBtn.hidden = true; return; }
+        var boxes = [];
+        fill(listBox, tasks.map(function (t) {
+          var box = fixBox(t, d.repo, draw); boxes.push(box);
+          return h("article", { class: "fix-item" }, h("p", { class: "eyebrow", style: "margin:0" }, PRIO_LABEL[t.priority] || ""), h("h3", {}, t.title), box);
+        }));
+        var left = tasks.filter(function (t) { return !t.fix || t.fix.status !== "done"; }).length;
+        allBtn.hidden = !left; allBtn.textContent = "✦ Tout corriger (" + left + ")";
+        allBtn.onclick = function () {
+          allBtn.disabled = true;
+          var queue = boxes.filter(function (b, i) { return !tasks[i].fix || tasks[i].fix.status !== "done"; });
+          queue.reduce(function (p, b) { return p.then(function () { return b.run().catch(function () {}); }); }, Promise.resolve())
+            .then(function () { allBtn.disabled = false; refreshMe(); });
+        };
+      }
+      draw();
+    }).catch(function (e) { fill(listBox, errorBox(e)); });
+  }
+
   function viewPlan(key) {
     loading();
     if (!key) {
@@ -1151,7 +1225,7 @@
       }).catch(fail);
       return;
     }
-    api("/api/plan/" + encodeURIComponent(key)).then(function (d) { renderPlan(key, d); }).catch(fail);
+    api("/api/plan/" + encodeURIComponent(key)).then(function (d) { renderPlan(key, d); showFixFab(key); }).catch(fail);
   }
   function renderPlan(key, d) {
     var state = { status: "todo", source: "" }, list = h("div", { class: "insights" }), pills = h("div", { class: "pills", role: "group", "aria-label": "Statut" });
@@ -1199,35 +1273,9 @@
           h("ul", {}, pages.slice(0, 30).map(function (u) { return h("li", {}, h("a", { class: "url", href: u, target: "_blank", rel: "noopener noreferrer" }, u)); }))) : null,
         fixView(t), impactView(t));
     }
-    // Correction automatique : Claude prépare la modification, GitHub reçoit une pull request à valider.
     function fixView(t) {
       if (!t.fixable || t.status !== "todo" || !d.autofix) return null;
-      var f = t.fix;
-      if (f && f.status === "done") return h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
-        h("p", {}, "Correction proposée" + (f.summary ? " : " + f.summary : "")),
-        h("a", { class: "btn btn-small btn-dark", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir la pull request #" + f.pr_number + " ↗"));
-      if (!d.repo) return h("div", { class: "fix-box" }, h("p", { class: "muted" }, "Vigie SEO peut corriger ceci pour vous dans votre code."),
-        h("a", { class: "btn btn-small", href: "#/connexions" }, "Associer le dépôt GitHub"));
-      var box = h("div", { class: "fix-box" + (f && f.status !== "running" ? " " + f.status : "") });
-      function idle() {
-        fill(box, f && (f.status === "failed" || f.status === "skipped") ? h("p", {}, (f.status === "skipped" ? "Rien à modifier : " : "Échec : ") + (f.error || "")) : h("p", { class: "muted" }, "Dépôt " + d.repo),
-          h("button", { class: "btn btn-small btn-green", type: "button", onclick: run }, f ? "Réessayer" : "✦ Corriger automatiquement"));
-      }
-      function run() {
-        var steps = ["Lecture du dépôt…", "Recherche des fichiers des pages…", "Rédaction de la correction…", "Ouverture de la pull request…"], i = 0;
-        var label = h("p", { class: "fix-step", "aria-live": "polite" }, steps[0]);
-        fill(box, h("span", { class: "fix-spin", "aria-hidden": "true" }), label);
-        box.className = "fix-box running";
-        var timer = setInterval(function () { if (i < steps.length - 1) label.textContent = steps[++i]; }, 6000);
-        api("/api/fixes", { task_id: t.id }).then(function (r) {
-          clearInterval(timer);
-          t.fix = { status: r.status, pr_url: r.pr_url, pr_number: r.pr_number, summary: r.summary, error: r.error };
-          toast(r.status === "done" ? "Pull request ouverte ✓ Vérifiez-la puis fusionnez-la sur GitHub." : r.status === "skipped" ? "Rien à modifier dans le code" : "La correction a échoué", r.status === "done" ? "good" : r.status === "skipped" ? "" : "bad");
-          draw();
-        }).catch(function (e) { clearInterval(timer); toast(e.message, "bad"); box.className = "fix-box"; idle(); });
-      }
-      idle();
-      return box;
+      return fixBox(t, d.repo, draw);
     }
     function draw() {
       var counts = { todo: 0, done: 0, ignored: 0 };
@@ -1951,7 +1999,7 @@
           r.repos.map(function (rp) { return h("option", { value: rp.full_name, selected: r.projects[site] === rp.full_name ? "" : null }, rp.full_name); }));
         sel.addEventListener("change", function () {
           api("/api/github/project", { site: site, repo: sel.value }).then(function (x) {
-            toast(x.linked ? site + " ↔ " + sel.value : "Dépôt retiré de " + site, x.linked ? "good" : "");
+            toast(x.linked ? site + " ↔ " + sel.value : "Dépôt retiré de " + site, x.linked ? "good" : ""); refreshMe();
           }).catch(function (e) { toast(e.message, "bad"); });
         });
         return h("div", { class: "repo-row" }, h("label", { for: "repo-" + site }, site), sel);
@@ -2128,7 +2176,7 @@
   function route() {
     var hash = location.hash.replace(/^#\/?/, ""), qs = new URLSearchParams(hash.split("?")[1] || "");
     var parts = hash.split("?")[0].split("/").map(decodeURIComponent), name = parts[0] || "home";
-    closeOverlay(); closeMenu();
+    closeOverlay(); closeMenu(); fab.hidden = true; document.body.classList.remove("has-fab");
     window.scrollTo(0, 0);
     if (!SESSION) {
       if (name === "connexion") viewAuth("login"); else if (name === "inscription") viewAuth("signup");

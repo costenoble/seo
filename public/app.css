@@ -700,7 +700,7 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 .fix-box { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 14px; border-radius: 16px;
   border: 1.5px dashed color-mix(in srgb, var(--ink) 25%, transparent); }
 .fix-box p { margin: 0; flex: 1; min-width: 180px; }
-.fix-box.done { border-style: solid; border-color: #3fb27f; background: color-mix(in srgb, #c9f0dc 55%, transparent); }
+.fix-box.done { border-style: solid; border-color: #3fb27f; background: color-mix(in srgb, #3fb27f 16%, transparent); }
 .fix-box.failed { border-color: #e06c6c; }
 .fix-box.running { border-style: solid; }
 .fix-dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb27f; box-shadow: 0 0 0 4px color-mix(in srgb, #3fb27f 25%, transparent); }
@@ -718,3 +718,24 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 .conn-badge.gh b { background: #c9f0dc; } .conn-badge.gsc b { background: #d2edff; } .conn-badge.ga4 b { background: #ffc3c3; }
 .conn-badge.add { padding: 4px 12px; border-style: dashed; color: var(--muted); border-color: var(--muted); text-decoration: none; }
 .conn-badge.add:hover { color: var(--ink); border-color: var(--ink); }
+
+/* bouton flottant « Corriger avec Claude » */
+.fix-fab { position: fixed; right: 24px; bottom: 24px; z-index: 40; display: inline-flex; align-items: center; gap: 10px;
+  font: 700 1rem var(--head); color: #fff; background: #0b0b0b; border: 0; border-radius: 99px; padding: 14px 22px 14px 16px; cursor: pointer;
+  box-shadow: 4px 4px 0 #3fb27f, 0 10px 30px rgba(0,0,0,.18); transition: transform .2s ease, box-shadow .2s ease; animation: fabin .5s cubic-bezier(.2,1.4,.4,1); }
+.fix-fab:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 #3fb27f, 0 14px 34px rgba(0,0,0,.22); }
+.fix-fab:focus-visible { outline: 3px solid #3fb27f; outline-offset: 3px; }
+.fix-fab[hidden] { display: none; }
+.fix-fab-star { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #3fb27f; color: #0b0b0b; animation: fabstar 3s ease-in-out infinite; }
+:root[data-theme="dark"] .fix-fab { background: #f3eeea; color: #0b0b0b; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .fix-fab { background: #f3eeea; color: #0b0b0b; } }
+@keyframes fabin { from { transform: translateY(30px) scale(.8); opacity: 0; } }
+@keyframes fabstar { 0%, 100% { transform: rotate(0) scale(1); } 50% { transform: rotate(180deg) scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .fix-fab, .fix-fab-star { animation: none; } }
+@media (max-width: 560px) { .fix-fab { right: 16px; bottom: 16px; padding: 12px 18px 12px 12px; font-size: .92rem; } }
+.fix-list { display: grid; gap: 12px; max-height: min(55vh, 520px); overflow: auto; padding-right: 4px; }
+.fix-item { border: 1.5px solid var(--line); border-radius: 18px; padding: 14px 16px; }
+.fix-item h3 { font-size: 1rem; margin: 4px 0 0; }
+.fix-item .fix-box { margin-top: 10px; }
+
+body.has-fab main { padding-bottom: 96px; }

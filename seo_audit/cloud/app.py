@@ -346,7 +346,8 @@ def create_app(settings: Settings | None = None) -> Flask:
         usage = db.usage_month(user_id())
         return jsonify(email=g.user["email"], plan=g.profile["plan"], limits=g.limits, mfa=g.profile["mfa"],
                        usage={k: usage.get(k, 0) for k in ("audit", "competitor", "keywords", "domain", "fix")},
-                       running=db.running_count(user_id()), google=db.google_token(user_id()) is not None)
+                       running=db.running_count(user_id()), google=db.google_token(user_id()) is not None,
+                       autofix=bool(settings.anthropic_api_key and settings.github_app_id), repos=db.project_repos(user_id()))
 
     @app.post("/api/me/delete")
     @authed
