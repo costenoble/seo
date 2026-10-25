@@ -653,6 +653,14 @@ class FakeRepo:
     def open_pr(self, title, head, base, body):
         self.log.append(("pr", title, head, base, body))
         return {"number": 7, "url": f"https://github.com/{self.full_name}/pull/7"}
+    state = "open"
+    def pull(self, number):
+        return {"state": FakeRepo.state, "merged": FakeRepo.state == "merged", "mergeable": True, "title": "Titre",
+                "url": "u", "head": "h", "base": "main"}
+    def pull_files(self, number): return [{"path": "app/tarifs/page.tsx", "status": "modified", "additions": 1, "deletions": 1, "patch": "@@ -1 +1 @@\n-a\n+b"}]
+    def merge(self, number, title): self.log.append(("merge", number)); FakeRepo.state = "merged"
+    def close_pr(self, number): self.log.append(("close", number)); FakeRepo.state = "closed"
+    def delete_branch(self, name): self.log.append(("delete", name))
 
 
 class FakeGitHubApp:
@@ -735,7 +743,29 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
     assert write[1] == "app/tarifs/page.tsx" and "description: 'Nos offres.'" in write[2] and write[4] == "sha-app/tarifs/page.tsx"
     assert FakeRepo.log[2][3] == "main" and "vigie-seo/" in FakeRepo.log[2][2]
     fix = client.get("/api/plan/monsite.fr", headers=h).get_json()["tasks"][0]["fix"]
-    assert fix["status"] == "done" and fix["pr_number"] == 7
+    assert fix["status"] == "done" and fix["pr_number"] == 7 and fix["merged_at"] is None
+
+    # relecture puis validation depuis Vigie SEO : fusion, branche supprimée, tâche faite
+    FakeRepo.state = "open"
+    detail = client.get(f"/api/fixes/{fix['id']}", headers=h).get_json()
+    assert detail["files"][0]["patch"].endswith("+b") and detail["pr"]["state"] == "open"
+    assert client.get(f"/api/fixes/{fix['id']}", headers=bob).status_code == 404
+    assert client.post(f"/api/fixes/{fix['id']}/merge", headers=bob, json={}).status_code == 404
+    FakeRepo.log = []
+    assert client.post(f"/api/fixes/{fix['id']}/merge", headers=h, json={}).get_json()["merged"]
+    assert [e[0] for e in FakeRepo.log] == ["merge", "delete"]
+    t = client.get("/api/plan/monsite.fr", headers=h).get_json()["tasks"][0]
+    assert t["status"] == "done" and t["fix"]["merged_at"]
+    with psycopg.connect(pg_dsn) as c:
+        c.execute("update tasks set status='todo', done_at=null where id=%s", (task_id,))
+        c.execute("update fixes set merged_at=null")
+
+    # refus : la pull request est fermée, la tâche reste à faire
+    FakeRepo.state = "open"; FakeRepo.log = []
+    assert client.post(f"/api/fixes/{fix['id']}/close", headers=h, json={}).get_json()["closed"]
+    assert [e[0] for e in FakeRepo.log] == ["close", "delete"]
+    t = client.get("/api/plan/monsite.fr", headers=h).get_json()["tasks"][0]
+    assert t["status"] == "todo" and t["fix"]["closed_at"]
 
     # une modification introuvable est refusée sans rien écrire ; consommation comptée
     FakeRepo.log = []

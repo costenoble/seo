@@ -117,3 +117,23 @@ class Repo:
     def open_pr(self, title: str, head: str, base: str, body: str) -> dict:
         data = self._req("POST", "/pulls", json={"title": title, "head": head, "base": base, "body": body})
         return {"number": data["number"], "url": data["html_url"]}
+
+    # -- relecture et validation depuis Vigie SEO ---------------------------------------------------
+    def pull(self, number: int) -> dict:
+        d = self._req("GET", f"/pulls/{number}")
+        return {"state": d["state"], "merged": bool(d.get("merged")), "mergeable": d.get("mergeable"),
+                "title": d["title"], "url": d["html_url"], "head": d["head"]["ref"], "base": d["base"]["ref"]}
+
+    def pull_files(self, number: int) -> list[dict]:
+        return [{"path": f["filename"], "status": f["status"], "additions": f["additions"], "deletions": f["deletions"],
+                 "patch": f.get("patch", "")} for f in self._req("GET", f"/pulls/{number}/files", params={"per_page": 100})]
+
+    def merge(self, number: int, title: str) -> None:
+        """Fusion en un seul commit (squash) dans la branche principale."""
+        self._req("PUT", f"/pulls/{number}/merge", json={"merge_method": "squash", "commit_title": f"{title} (#{number})"})
+
+    def close_pr(self, number: int) -> None:
+        self._req("PATCH", f"/pulls/{number}", json={"state": "closed"})
+
+    def delete_branch(self, name: str) -> None:
+        self._req("DELETE", f"/git/refs/heads/{name}")

@@ -720,7 +720,7 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 .conn-badge.add:hover { color: var(--ink); border-color: var(--ink); }
 
 /* bouton flottant « Corriger avec Claude » */
-.fix-fab { position: fixed; right: 24px; bottom: 24px; z-index: 40; display: inline-flex; align-items: center; gap: 10px;
+.fix-fab { position: fixed; right: 24px; bottom: 24px; z-index: 35; display: inline-flex; align-items: center; gap: 10px;
   font: 700 1rem var(--head); color: #fff; background: #0b0b0b; border: 0; border-radius: 99px; padding: 14px 22px 14px 16px; cursor: pointer;
   box-shadow: 4px 4px 0 #3fb27f, 0 10px 30px rgba(0,0,0,.18); transition: transform .2s ease, box-shadow .2s ease; animation: fabin .5s cubic-bezier(.2,1.4,.4,1); }
 .fix-fab:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 #3fb27f, 0 14px 34px rgba(0,0,0,.22); }
@@ -739,3 +739,16 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 .fix-item .fix-box { margin-top: 10px; }
 
 body.has-fab main { padding-bottom: 96px; }
+
+/* relecture d'une correction */
+.fix-review { display: grid; gap: 10px; max-height: min(50vh, 480px); overflow: auto; }
+.diff { border: 1.5px solid var(--line); border-radius: 14px; overflow: hidden; }
+.diff summary { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 10px 14px; cursor: pointer; font-size: .9rem; }
+.diff summary code { overflow-wrap: anywhere; }
+.diff-n { display: inline-flex; gap: 8px; font: 700 .8rem var(--head); flex: none; }
+.diff-n .add { color: #1f8f5c; } .diff-n .del { color: #c94848; }
+.diff pre { margin: 0; padding: 10px 0; font: .78rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.diff pre span { display: block; padding: 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff pre .add { background: color-mix(in srgb, #3fb27f 18%, transparent); }
+.diff pre .del { background: color-mix(in srgb, #e06c6c 16%, transparent); }
+.diff pre .hunk { color: var(--muted); }

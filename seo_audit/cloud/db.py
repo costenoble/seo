@@ -606,9 +606,26 @@ class Db:
         with self.conn() as c:
             c.execute("""UPDATE fixes SET status='failed', error='Délai dépassé, réessayez', finished_at=now()
                          WHERE user_id=%s AND status='running' AND created_at < now() - interval '3 minutes'""", (user_id,))
-            rows = c.execute("""SELECT DISTINCT ON (task_id) task_id, status, pr_url, pr_number, summary, error, created_at
+            rows = c.execute("""SELECT DISTINCT ON (task_id) id, task_id, status, pr_url, pr_number, summary, error, created_at,
+                                       merged_at, closed_at
                                 FROM fixes WHERE user_id=%s AND site=%s ORDER BY task_id, created_at DESC""", (user_id, site)).fetchall()
-        return {str(r["task_id"]): {**r, "task_id": str(r["task_id"]), "created_at": r["created_at"].isoformat()} for r in rows}
+        iso = lambda v: v.isoformat() if v else None
+        return {str(r["task_id"]): {**r, "id": str(r["id"]), "task_id": str(r["task_id"]), "created_at": iso(r["created_at"]),
+                                    "merged_at": iso(r["merged_at"]), "closed_at": iso(r["closed_at"])} for r in rows}
+
+    def fix(self, user_id: str, fix_id: str) -> dict | None:
+        try:
+            with self.conn() as c:
+                return c.execute("""SELECT id, task_id, site, repo, status, branch, pr_url, pr_number, summary, merged_at, closed_at
+                                    FROM fixes WHERE id=%s AND user_id=%s""", (fix_id, user_id)).fetchone()
+        except psycopg.errors.InvalidTextRepresentation:
+            return None
+
+    def mark_fix(self, fix_id: str, merged: bool = False, closed: bool = False) -> None:
+        with self.conn() as c:
+            c.execute("""UPDATE fixes SET merged_at = CASE WHEN %s THEN coalesce(merged_at, now()) ELSE merged_at END,
+                                          closed_at = CASE WHEN %s THEN coalesce(closed_at, now()) ELSE closed_at END
+                         WHERE id=%s""", (merged, closed, fix_id))
 
     def page_queries(self, user_id: str, site: str, page_url: str, limit: int = 8) -> list[str]:
         """Requêtes Search Console d'une page (toutes les propriétés du projet)."""

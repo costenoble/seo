@@ -288,6 +288,82 @@ def create_app(settings: Settings | None = None) -> Flask:
         db.finish_fix(fix_id, res["status"], **{k: v for k, v in res.items() if k != "status"})
         return jsonify(id=fix_id, **res)
 
+    def _fix_repo(fix: dict):
+        """Dépôt d'une correction, avec un jeton d'une installation de l'utilisateur qui y a accès."""
+        from .github import Repo
+        gh = _gh()
+        link = db.project_repo(user_id(), fix["site"])
+        insts = [link["installation_id"]] if link and link["repo"] == fix["repo"] else []
+        insts += [i["installation_id"] for i in db.installations(user_id()) if i["installation_id"] not in insts]
+        for inst in insts:
+            try:
+                if any(r["full_name"] == fix["repo"] for r in gh.repositories(inst)):
+                    return Repo(gh.installation_token(inst), fix["repo"])
+            except GitHubError:
+                continue
+        abort(403, "Ce dépôt n'est plus accessible avec vos installations GitHub")
+
+    def _own_fix(fix_id: str) -> dict:
+        fix = db.fix(user_id(), fix_id)
+        if not fix or fix["status"] != "done" or not fix["pr_number"]:
+            abort(404, "Correction introuvable")
+        return fix
+
+    @app.get("/api/fixes/<fix_id>")
+    @authed
+    def fix_detail(fix_id):
+        """Relecture : modifications de la pull request et son état chez GitHub (fusionnée ailleurs, fermée…)."""
+        fix = _own_fix(fix_id)
+        repo = _fix_repo(fix)
+        try:
+            pr, files = repo.pull(fix["pr_number"]), repo.pull_files(fix["pr_number"])
+        except GitHubError as exc:
+            abort(502, str(exc))
+        if pr["merged"] or pr["state"] == "closed":
+            db.mark_fix(fix_id, merged=pr["merged"], closed=not pr["merged"])
+        return jsonify(id=fix_id, summary=fix["summary"], pr=pr, files=files)
+
+    @app.post("/api/fixes/<fix_id>/merge")
+    @authed
+    def fix_merge(fix_id):
+        """Validation par l'utilisateur : fusion de la pull request, la tâche passe en « faite » (mesure de l'effet)."""
+        fix = _own_fix(fix_id)
+        repo = _fix_repo(fix)
+        try:
+            pr = repo.pull(fix["pr_number"])
+            if not pr["merged"]:
+                if pr["state"] != "open":
+                    abort(409, "Cette pull request a été fermée sur GitHub")
+                repo.merge(fix["pr_number"], pr["title"])
+        except GitHubError as exc:
+            if " 405 " in str(exc) or " 409 " in str(exc):
+                abort(409, "GitHub refuse la fusion (conflit avec d'autres modifications ou vérifications en échec). "
+                           "Ouvrez la pull request sur GitHub pour voir le détail.")
+            abort(502, str(exc))
+        db.mark_fix(fix_id, merged=True)
+        db.set_task_status(user_id(), str(fix["task_id"]), "done")
+        try:
+            repo.delete_branch(fix["branch"])
+        except GitHubError:
+            pass
+        return jsonify(merged=True)
+
+    @app.post("/api/fixes/<fix_id>/close")
+    @authed
+    def fix_close(fix_id):
+        """Refus : la pull request est fermée, rien n'est modifié sur le site ; la tâche reste à faire."""
+        fix = _own_fix(fix_id)
+        repo = _fix_repo(fix)
+        try:
+            if repo.pull(fix["pr_number"])["state"] == "open":
+                repo.close_pr(fix["pr_number"])
+            repo.delete_branch(fix["branch"])
+        except GitHubError as exc:
+            if " 404 " not in str(exc) and " 422 " not in str(exc):
+                abort(502, str(exc))
+        db.mark_fix(fix_id, closed=True)
+        return jsonify(closed=True)
+
     # -- e-mails -------------------------------------------------------------------------------------
     @app.get("/api/notifications")
     @authed

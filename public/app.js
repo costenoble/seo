@@ -1139,12 +1139,20 @@
   /* ---------- corrections automatiques avec Claude ---------- */
   // Cadre d'une tâche corrigeable : bouton, étapes pendant la rédaction, lien vers la pull request.
   // box.run() lance la correction et renvoie une promesse (utilisé par « Tout corriger »).
-  function fixBox(t, repo, onDone) {
+  function fixBox(t, repo, onDone, reopen) {
     var f = t.fix;
-    if (f && f.status === "done") {
+    if (f && f.merged_at) {
+      var pub = h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
+        h("p", {}, "✓ Correction publiée le " + fdate(f.merged_at, true) + (f.summary ? " : " + f.summary : "")),
+        h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir sur GitHub ↗"));
+      pub.run = function () { return Promise.resolve(); };
+      return pub;
+    }
+    if (f && f.status === "done" && !f.closed_at) {
       var ok = h("div", { class: "fix-box done" }, h("span", { class: "fix-dot" }),
-        h("p", {}, "Correction proposée" + (f.summary ? " : " + f.summary : "")),
-        h("a", { class: "btn btn-small btn-dark", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir la pull request #" + f.pr_number + " ↗"));
+        h("p", {}, "Correction prête à valider" + (f.summary ? " : " + f.summary : "")),
+        h("button", { class: "btn btn-small btn-dark", type: "button", onclick: function () { fixReview(t, onDone, reopen); } }, "Relire et valider"),
+        h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "GitHub ↗"));
       ok.run = function () { return Promise.resolve(); };
       return ok;
     }
@@ -1152,8 +1160,11 @@
       h("a", { class: "btn btn-small", href: "#/connexions" }, "Associer le dépôt GitHub"));
     var box = h("div", { class: "fix-box" + (f && f.status !== "running" ? " " + f.status : "") });
     function idle() {
-      fill(box, f && (f.status === "failed" || f.status === "skipped") ? h("p", {}, (f.status === "skipped" ? "Rien à modifier : " : "Échec : ") + (f.error || "")) : h("p", { class: "muted" }, "Dépôt " + repo),
-        h("button", { class: "btn btn-small btn-green", type: "button", onclick: function () { box.run(); } }, f ? "Réessayer" : "✦ Corriger avec Claude"));
+      var msg = !f ? h("p", { class: "muted" }, "Dépôt " + repo)
+        : f.closed_at ? h("p", { class: "muted" }, "Proposition refusée : rien n'a été modifié sur le site.")
+        : h("p", {}, (f.status === "skipped" ? "Rien à modifier : " : "Échec : ") + (f.error || ""));
+      fill(box, msg, h("button", { class: "btn btn-small btn-green", type: "button", onclick: function () { box.run(); } },
+        !f ? "✦ Corriger avec Claude" : f.closed_at ? "✦ Nouvelle proposition" : "Réessayer"));
     }
     box.run = function () {
       var steps = ["Lecture du dépôt…", "Recherche des fichiers des pages…", "Claude rédige la correction…", "Ouverture de la pull request…"], i = 0;
@@ -1172,6 +1183,46 @@
     return box;
   }
 
+  // Relecture d'une correction : les modifications fichier par fichier, puis « Valider et publier » ou « Refuser ».
+  function fixReview(t, onDone, reopen) {
+    var f = t.fix, body = h("div", { class: "fix-review" }, h("p", { class: "muted" }, "Chargement des modifications…"));
+    var err = h("div"), actions = h("div", { class: "form-row", style: "justify-content:space-between" });
+    function back() { if (reopen) reopen(); else closeOverlay(); if (onDone) onDone(); }
+    modal("Relire la correction", [h("p", { class: "eyebrow" }, "Relire la correction"), h("h2", {}, t.title),
+      f.summary ? h("p", {}, f.summary) : null, body, err, actions]);
+    api("/api/fixes/" + f.id).then(function (r) {
+      if (r.pr.merged) { f.merged_at = f.merged_at || new Date().toISOString(); toast("Déjà publiée depuis GitHub", "good"); back(); return; }
+      if (r.pr.state === "closed") { f.closed_at = new Date().toISOString(); toast("Cette proposition a été fermée sur GitHub", ""); back(); return; }
+      fill(body, r.files.map(function (file) {
+        return h("details", { class: "diff", open: r.files.length <= 3 ? "" : null },
+          h("summary", {}, h("code", {}, file.path), h("span", { class: "diff-n" }, h("b", { class: "add" }, "+" + file.additions), h("b", { class: "del" }, "−" + file.deletions))),
+          h("pre", {}, (file.patch || "").split("\n").map(function (line) {
+            var c = line.startsWith("@@") ? "hunk" : line[0] === "+" ? "add" : line[0] === "-" ? "del" : "";
+            return h("span", { class: c }, line + "\n");
+          })));
+      }));
+      var mergeBtn = h("button", { class: "btn btn-green", type: "button" }, "✓ Valider et publier");
+      var closeBtn = h("button", { class: "btn danger", type: "button" }, "Refuser");
+      mergeBtn.onclick = function () {
+        mergeBtn.disabled = closeBtn.disabled = true; mergeBtn.textContent = "Publication…"; fill(err);
+        api("/api/fixes/" + f.id + "/merge", {}).then(function () {
+          f.merged_at = new Date().toISOString(); t.status = "done";
+          toast("Publié ✓ Si votre hébergeur suit GitHub, c'est en ligne dans quelques minutes.", "good"); refreshMe(); back();
+        }).catch(function (e) { mergeBtn.disabled = closeBtn.disabled = false; mergeBtn.textContent = "✓ Valider et publier"; fill(err, errorBox(e)); });
+      };
+      closeBtn.onclick = function () {
+        mergeBtn.disabled = closeBtn.disabled = true; fill(err);
+        api("/api/fixes/" + f.id + "/close", {}).then(function () {
+          f.closed_at = new Date().toISOString(); toast("Proposition refusée, rien n'a été modifié", ""); back();
+        }).catch(function (e) { mergeBtn.disabled = closeBtn.disabled = false; fill(err, errorBox(e)); });
+      };
+      fill(actions, h("div", { class: "form-row" }, mergeBtn, closeBtn),
+        h("a", { class: "btn btn-small", href: f.pr_url, target: "_blank", rel: "noopener noreferrer" }, "Voir sur GitHub ↗"));
+      actions.after(h("p", { class: "note" }, "« Valider et publier » fusionne la pull request dans la branche " + r.pr.base +
+        " de votre dépôt. Si votre hébergeur se met à jour depuis GitHub, la modification est en ligne dans la foulée."));
+    }).catch(function (e) { fill(body, errorBox(e)); fill(actions, h("button", { class: "btn", type: "button", onclick: back }, "Fermer")); });
+  }
+
   // Bouton flottant « Corriger avec Claude », sur les pages d'un projet dont le dépôt GitHub est associé.
   var fab = h("button", { class: "fix-fab", type: "button", hidden: true }, h("span", { class: "fix-fab-star", "aria-hidden": "true" }, "✦"), h("span", {}, "Corriger avec Claude"));
   document.body.append(fab);
@@ -1188,19 +1239,20 @@
       listBox, h("div", { class: "form-row", style: "justify-content:space-between" }, allBtn,
         h("button", { class: "btn", type: "button", onclick: closeOverlay }, "Fermer"))]);
     api("/api/plan/" + encodeURIComponent(site)).then(function (d) {
-      var tasks = d.tasks.filter(function (t) { return t.fixable && t.status === "todo"; });
+      var tasks = d.tasks.filter(function (t) { return t.fixable && (t.status === "todo" || (t.fix && t.fix.merged_at)); });
       function draw() {
         if (!tasks.length) { fill(listBox, h("p", { class: "muted" }, "Rien à corriger automatiquement pour l'instant 🎉 Relancez un audit pour de nouvelles recommandations.")); allBtn.hidden = true; return; }
         var boxes = [];
         fill(listBox, tasks.map(function (t) {
-          var box = fixBox(t, d.repo, draw); boxes.push(box);
+          var box = fixBox(t, d.repo, draw, function () { fixModal(site); }); boxes.push(box);
           return h("article", { class: "fix-item" }, h("p", { class: "eyebrow", style: "margin:0" }, PRIO_LABEL[t.priority] || ""), h("h3", {}, t.title), box);
         }));
-        var left = tasks.filter(function (t) { return !t.fix || t.fix.status !== "done"; }).length;
+        var pending = function (t) { return !t.fix || t.fix.status !== "done" || t.fix.closed_at; };
+        var left = tasks.filter(pending).length;
         allBtn.hidden = !left; allBtn.textContent = "✦ Tout corriger (" + left + ")";
         allBtn.onclick = function () {
           allBtn.disabled = true;
-          var queue = boxes.filter(function (b, i) { return !tasks[i].fix || tasks[i].fix.status !== "done"; });
+          var queue = boxes.filter(function (b, i) { return pending(tasks[i]); });
           queue.reduce(function (p, b) { return p.then(function () { return b.run().catch(function () {}); }); }, Promise.resolve())
             .then(function () { allBtn.disabled = false; refreshMe(); });
         };
@@ -1274,8 +1326,8 @@
         fixView(t), impactView(t));
     }
     function fixView(t) {
-      if (!t.fixable || t.status !== "todo" || !d.autofix) return null;
-      return fixBox(t, d.repo, draw);
+      if (!d.autofix || !t.fixable || !(t.status === "todo" || (t.fix && t.fix.merged_at))) return null;
+      return fixBox(t, d.repo, draw, function () { closeOverlay(); viewPlan(key); });
     }
     function draw() {
       var counts = { todo: 0, done: 0, ignored: 0 };
