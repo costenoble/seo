@@ -1791,7 +1791,11 @@
           h("div", { class: "card form-row", style: "margin-bottom:24px" },
             h("div", { class: "field", style: "flex:2;min-width:240px" }, h("label", { for: "ga-prop" }, "Propriété"), pick),
             h("div", { class: "field", style: "flex:1;min-width:200px" }, h("label", { for: "ga-site" }, "Projet Vigie SEO associé"), siteSel),
-            h("button", { class: "btn btn-small", type: "button", onclick: function () { renderBody(true); } }, "Actualiser")),
+            h("button", { class: "btn btn-small", type: "button", onclick: function () { renderBody(true); } }, "Actualiser"),
+            h("details", { class: "note ga-help" }, h("summary", {}, "Vous ne voyez pas votre site dans la liste ?"),
+              h("p", {}, "La liste montre les propriétés GA4 du compte Google connecté. Les propriétés nommées « Default Account for Firebase » sont créées automatiquement par Firebase pour vos applications."),
+              h("ul", {}, h("li", {}, "Votre site n'a pas encore Google Analytics : créez une propriété sur analytics.google.com (Administration → Créer → Propriété → flux Web), puis installez la balise G-… sur le site."),
+                h("li", {}, "Il est suivi avec un autre compte Google : ", h("button", { class: "link-btn", type: "button", onclick: connectAnalytics }, "connectez ce compte"), ", ou ajoutez votre adresse comme « Lecteur » de la propriété dans GA4.")))),
           body);
         function renderBody(refresh) {
           fill(body, h("div", { class: "empty" }, h("span", { class: "spinner" })));
