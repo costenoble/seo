@@ -48,6 +48,26 @@ def test_locate_react_router():
     assert fixer.root_files("react", REACT)[0] == "index.html"
 
 
+NUXT = ["package.json", "nuxt.config.ts", "app.vue", "pages/index.vue", "pages/boutique.vue", "pages/boissons/index.vue",
+        "pages/boissons/[slug].vue", "composables/useSite.ts", "components/TheHeader.vue"]
+
+
+def test_locate_nuxt():
+    assert fixer.detect_framework(NUXT, '{"dependencies": {"nuxt": "^3.21"}}') == "nuxt"
+    assert fixer.locate("nuxt", NUXT, "https://x.fr/boutique") == ["pages/boutique.vue", "nuxt.config.ts", "app.vue"]
+    assert fixer.locate("nuxt", NUXT, "https://x.fr/boissons")[0] == "pages/boissons/index.vue"
+    assert fixer.locate("nuxt", NUXT, "https://x.fr/boissons/aurore")[0] == "pages/boissons/[slug].vue"
+    assert fixer.locate("nuxt", NUXT, "https://x.fr/")[0] == "pages/index.vue"
+    assert fixer.root_files("nuxt", NUXT) == ["nuxt.config.ts", "app.vue"]
+
+
+def test_locate_astro_home_and_pages():
+    paths = ["src/pages/index.astro", "src/pages/blog/index.astro", "src/pages/blog/[slug].astro", "src/layouts/Base.astro"]
+    assert fixer.locate("astro", paths, "https://x.fr/") == ["src/pages/index.astro", "src/layouts/Base.astro"]
+    assert fixer.locate("astro", paths, "https://x.fr/blog/")[0] == "src/pages/blog/index.astro"
+    assert fixer.locate("astro", paths, "https://x.fr/blog/mon-article")[0] == "src/pages/blog/[slug].astro"
+
+
 def test_apply_plan_is_strict():
     files = {"a.jsx": "title='A'\ntitle='B'\n"}
     plan = {"files": [{"path": "a.jsx", "mode": "edit", "content": "", "edits": [{"search": "title='A'", "replace": "title='AA'"}]}]}

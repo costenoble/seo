@@ -72,7 +72,7 @@ def detect_framework(paths: list[str], package_json: str | None) -> str:
 
 
 def _segments(route_file: str, root: str, strip: tuple[str, ...]) -> list[str] | None:
-    rel = route_file[len(root):]
+    rel = "/" + route_file[len(root):].lstrip("/")  # « /index.vue » à la racine comme dans un sous-dossier
     for s in strip:
         if rel.endswith(s):
             rel = rel[: -len(s)]
@@ -136,6 +136,13 @@ def _route_tags(text: str):
                 break
             i += 1
         yield text[m.end():i]
+
+
+def nuxt_globals(paths: list[str]) -> list[str]:
+    """Réglages communs à toutes les pages Nuxt : nuxt.config (app.head), app.vue, gabarit par défaut."""
+    candidates = ["nuxt.config.ts", "nuxt.config.js", "app.vue", "app/app.vue", "layouts/default.vue", "app/layouts/default.vue"]
+    found = [c for c in candidates if c in paths]
+    return found + [p for p in paths if re.match(r"^(app/)?composables/[^/]*(seo|meta|head)[^/]*\.(ts|js)$", p, re.I)][:1]
 
 
 def meta_helpers(paths: list[str]) -> list[str]:
@@ -230,6 +237,19 @@ def locate(framework: str, paths: list[str], url: str, routes: dict[str, str] | 
         if best[1]:
             layouts = [p for p in paths if p.startswith("src/layouts/") and p.endswith(".astro")][:2]
             return [best[1]] + layouts
+    if framework == "nuxt":  # routage par fichiers : pages/ (Nuxt 3) ou app/pages/ (Nuxt 4)
+        for root in ("app/pages/", "pages/"):
+            for p in paths:
+                if p.startswith(root):
+                    for suffix in ("/index.vue", ".vue"):
+                        seg = _segments(p, root, (suffix,))
+                        if seg is not None:
+                            score = _match(seg, parts)
+                            if score > best[0]:
+                                best = (score, p)
+                            break
+            if best[1]:
+                return [best[1]] + nuxt_globals(paths)
     if framework == "sveltekit":
         for p in paths:
             if p.startswith("src/routes/") and p.endswith("/+page.svelte"):
@@ -256,6 +276,8 @@ def root_files(framework: str, paths: list[str]) -> list[str]:
                   "html": ["index.html", "public/index.html"]}.get(framework, [])
     if framework == "react":
         candidates = ["index.html", "public/index.html"] + meta_helpers(paths)
+    if framework == "nuxt":
+        candidates = nuxt_globals(paths)
     return [c for c in candidates if c in paths]
 
 
@@ -298,6 +320,11 @@ Règles :
   la limite de 60 caractères s'applique au title FINAL, suffixe compris, et ne répète pas la marque déjà présente
   dans ce suffixe. Indique le title final dans "changes".
 - Traite toutes les pages listées dont le fichier est fourni.
+- Pour une balise attendue sur toutes les pages (canonical, lang, viewport, robots), préfère une correction unique dans
+  le fichier commun (layout, app.vue, nuxt.config, gabarit SEO) quand la technologie le permet, plutôt que page par page ;
+  une canonical se calcule à partir de l'adresse de la page courante et du domaine du site (adresse fournie).
+- Une description propre à chaque page se déclare dans la page elle-même (Next : metadata ; Nuxt : useHead/useSeoMeta ;
+  React : composant de métadonnées utilisé par le site), sans supprimer la valeur par défaut commune.
 - Si tu ne peux pas corriger proprement (contenu chargé depuis un CMS, fichier introuvable, risque de casser le site),
   renvoie "files": [] et explique pourquoi dans "skipped_reason".
 - "pr_title" : titre court de la pull request, en français. "summary" : 2 ou 3 phrases pour le relecteur.
@@ -397,8 +424,8 @@ def run_fix(db, settings, user_id: str, task: dict, repo_link: dict, gh) -> dict
     paths = repo.tree(head)
     pkg = repo.read("package.json", head) if "package.json" in paths else None
     framework = detect_framework(paths, pkg[0] if pkg else None)
-    if framework in ("unknown", "nuxt"):
-        raise FixError("Technologie du site non prise en charge pour l'instant (Next.js, React, Astro, SvelteKit et HTML le sont)")
+    if framework == "unknown":
+        raise FixError("Technologie du site non prise en charge pour l'instant (Next.js, Nuxt, React, Astro, SvelteKit et HTML le sont)")
     routes = None
     if framework == "react":
         routes = react_routes(paths, lambda p: (repo.read(p, head) or (None,))[0])
