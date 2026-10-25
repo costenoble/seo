@@ -283,10 +283,15 @@ def create_app(settings: Settings | None = None) -> Flask:
         except (fixer.FixError, GitHubError) as exc:
             db.finish_fix(fix_id, "failed", error=str(exc)[:500])
             return jsonify(id=fix_id, status="failed", error=str(exc)), 200
-        except Exception as exc:  # erreur imprévue : on la consigne sans exposer de détail technique
+        except httpx.HTTPError as exc:
+            log.warning("Correction %s : réseau %r", fix_id, exc)
+            db.finish_fix(fix_id, "failed", error="GitHub ou Claude n'a pas répondu à temps, réessayez")
+            return jsonify(id=fix_id, status="failed", error="GitHub ou Claude n'a pas répondu à temps, réessayez"), 200
+        except Exception as exc:  # erreur imprévue : on garde son type pour le diagnostic, sans détail sensible
             log.exception("Correction automatique %s", fix_id)
-            db.finish_fix(fix_id, "failed", error="Erreur inattendue")
-            return jsonify(id=fix_id, status="failed", error="Erreur inattendue, réessayez"), 200
+            kind = f"{type(exc).__name__} : {str(exc)[:160]}" if not isinstance(exc, anthropic.APIError) else type(exc).__name__
+            db.finish_fix(fix_id, "failed", error=f"Erreur inattendue ({kind})")
+            return jsonify(id=fix_id, status="failed", error=f"Erreur inattendue, réessayez ({type(exc).__name__})"), 200
         db.finish_fix(fix_id, res["status"], **{k: v for k, v in res.items() if k != "status"})
         return jsonify(id=fix_id, **res)
 

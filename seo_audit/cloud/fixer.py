@@ -392,7 +392,13 @@ def ask_claude(api_key: str, task: dict, framework: str, pages: list[dict], file
     if response.stop_reason == "max_tokens":
         raise FixError("Correction trop longue : réessayez avec moins de pages")
     text = next((b.text for b in response.content if b.type == "text"), "")
-    return json.loads(text)
+    try:
+        plan = json.loads(text)
+    except ValueError as exc:
+        raise FixError("Réponse de l'IA illisible, réessayez") from exc
+    for key in ("files", "pr_title", "summary", "changes", "skipped_reason"):
+        plan.setdefault(key, [] if key in ("files", "changes") else "")
+    return plan
 
 
 # -- vérification et application ----------------------------------------------------------------------
