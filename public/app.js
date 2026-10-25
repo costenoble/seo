@@ -45,7 +45,7 @@
   // Les chiffres des indicateurs et des anneaux montent de 0 jusqu'à leur valeur.
   function countUp(root) {
     if (REDUCED || !root.querySelectorAll) return;
-    root.querySelectorAll(".kpi .v, .ring .v, .price").forEach(function (el) {
+    root.querySelectorAll(".kpi .v, .ring .v, .price, .claude-stats .v").forEach(function (el) {
       if (el.dataset.counted || el.closest(".rv:not(.in)")) return;  // les chiffres pas encore à l'écran attendent leur apparition
       el.dataset.counted = "1";
       var first = el.firstChild;
@@ -750,7 +750,7 @@
       if (!fix.on || !list.length) { claudeEl.hidden = true; return; }
       claudeEl.hidden = false;
       var todo = list.filter(fixPending), wait = list.filter(fixToValidate), ok = list.filter(function (t) { return t.fix && t.fix.merged_at; });
-      var allBtn = h("button", { class: "btn btn-green", type: "button" }, "✦ Tout corriger (" + todo.length + ")");
+      var allBtn = h("button", { class: "btn btn-green claude-go", type: "button" }, "✦ Tout corriger (" + todo.length + ")");
       allBtn.hidden = !todo.length || !fix.repo;
       allBtn.onclick = function () {
         allBtn.disabled = true; state.claude = true; renderPills(); renderList();
@@ -758,16 +758,24 @@
           .then(function () { drawClaude(); });
         listEl.scrollIntoView({ behavior: "smooth", block: "start" });
       };
+      var total = list.length, pct = total ? Math.round(ok.length / total * 100) : 0;
+      var bar = h("span", { class: "claude-bar-fill" });
+      setTimeout(function () { bar.style.width = pct + "%"; }, 60);
       fill(claudeEl, h("div", { class: "claude-card" },
-        h("div", { class: "claude-head" }, h("span", { class: "fix-fab-star", "aria-hidden": "true" }, "✦"),
+        h("span", { class: "claude-spark s1", "aria-hidden": "true" }, "✦"), h("span", { class: "claude-spark s2", "aria-hidden": "true" }, "✦"),
+        h("span", { class: "claude-spark s3", "aria-hidden": "true" }, "✦"), h("span", { class: "claude-spark s4", "aria-hidden": "true" }, "✦"),
+        h("div", { class: "claude-head" }, h("span", { class: "claude-star", "aria-hidden": "true" }, "✦"),
           h("div", {}, h("h2", {}, "Claude corrige pour vous"),
-            h("p", { class: "muted" }, fix.repo ? "Dans votre dépôt " + fix.repo + ". Rien n'est publié sans votre validation." : "Associez le dépôt GitHub de ce site pour activer les corrections."))),
+            h("p", {}, fix.repo ? "Dans votre dépôt " + fix.repo + ". Rien n'est publié sans votre validation." : "Associez le dépôt GitHub de ce site pour activer les corrections."))),
+        h("div", { class: "claude-progress" },
+          h("div", { class: "claude-progress-label" }, h("span", {}, pct === 100 ? "Tout est corrigé 🎉" : "Progression"), h("b", {}, ok.length + " / " + total)),
+          h("div", { class: "claude-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(total), "aria-valuenow": String(ok.length) }, bar)),
         h("div", { class: "claude-stats" },
-          h("div", {}, h("b", {}, todo.length), h("span", {}, "à corriger")),
-          h("div", { class: wait.length ? "wait" : "" }, h("b", {}, wait.length), h("span", {}, "à valider")),
-          h("div", { class: ok.length ? "ok" : "" }, h("b", {}, ok.length), h("span", {}, "corrigés et publiés"))),
+          h("div", { class: "todo" + (todo.length ? " on" : "") }, h("b", { class: "v" }, String(todo.length)), h("span", {}, "à corriger")),
+          h("div", { class: "wait" + (wait.length ? " on" : "") }, h("b", { class: "v" }, String(wait.length)), h("span", {}, "à valider")),
+          h("div", { class: "ok" + (ok.length ? " on" : "") }, h("b", { class: "v" }, String(ok.length)), h("span", {}, "corrigés et publiés"))),
         h("div", { class: "form-row" }, fix.repo ? null : h("a", { class: "btn btn-dark", href: "#/connexions" }, "Associer le dépôt GitHub"), allBtn,
-          h("button", { class: "btn", type: "button", onclick: function () { state.claude = true; state.cat = ""; renderPills(); renderList(); listEl.scrollIntoView({ behavior: "smooth", block: "start" }); } },
+          h("button", { class: "btn btn-dark", type: "button", onclick: function () { state.claude = true; state.cat = ""; renderPills(); renderList(); listEl.scrollIntoView({ behavior: "smooth", block: "start" }); } },
             wait.length ? "Valider les corrections (" + wait.length + ")" : "Voir les problèmes concernés"))));
     }
     var pillsEl = h("div", { class: "pills", role: "group", "aria-label": "Filtrer par catégorie" });
