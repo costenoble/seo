@@ -48,7 +48,10 @@ class GitHubApp:
         GitHub a accès : on ne lie une installation que si elle figure dans cette liste."""
         r = httpx.post("https://github.com/login/oauth/access_token", timeout=20, headers={"Accept": "application/json"},
                        data={"client_id": self.client_id, "client_secret": self.client_secret, "code": code})
-        token = (r.json() if r.content else {}).get("access_token")
+        data = r.json() if r.content else {}
+        token = data.get("access_token")
+        if data.get("error") == "incorrect_client_credentials":
+            raise GitHubError("Connexion GitHub mal configurée côté Vigie SEO (client secret refusé)")
         if not token:
             raise GitHubError("GitHub a refusé l'autorisation, recommencez l'installation")
         data = self._request("GET", "/user/installations", token, params={"per_page": 100}).json()
