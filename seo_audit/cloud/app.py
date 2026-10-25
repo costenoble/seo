@@ -23,6 +23,7 @@ from . import crypto, google
 from .dataforseo import LOCATIONS, DataForSEO, DataForSEOError
 from .insights import analyze
 from .seranking import SOURCES, SERanking, SERankingError
+from . import traffic as traffic_mod
 from . import emails, notify, tracking
 from .plan import impact, tasks_from_audit, tasks_from_insights
 from .auth import AuthError, verify_token
@@ -364,7 +365,9 @@ def create_app(settings: Settings | None = None) -> Flask:
     @authed
     def google_status():
         tok = db.google_token(user_id())
+        scopes = (tok or {}).get("scopes", "")
         return jsonify(connected=tok is not None, email=tok["email"] if tok else None,
+                       gsc=google.SCOPE in scopes, ga4=google.GA4_SCOPE in scopes,
                        properties=db.properties(user_id()), max_properties=g.limits["gsc_properties"])
 
     # Connexion Search Console indépendante de l'identifiant Vigie SEO : OAuth Google côté serveur.
@@ -389,8 +392,9 @@ def create_app(settings: Settings | None = None) -> Flask:
     def google_connect_url():
         if not settings.google_client_id:
             abort(503, "Connexion Google non configurée")
+        wanted = [google.SCOPES[t] for t in (request.args.get("tools") or "gsc").split(",") if t in google.SCOPES]
         return jsonify(url=google.auth_url(settings.google_client_id, _google_redirect_uri(), _sign_state(user_id()),
-                                           request.args.get("hint", "")))
+                                           request.args.get("hint", ""), wanted or [google.SCOPE]))
 
     @app.get("/api/google/callback")
     def google_callback():
@@ -406,7 +410,9 @@ def create_app(settings: Settings | None = None) -> Flask:
         except google.GoogleError as exc:
             log.warning("Connexion Search Console : %s", exc)
             return redirect("/#/connexions?google=erreur")
-        db.save_google_token(uid, crypto.encrypt(settings.token_key, res["refresh_token"]), res["email"])
+        previous = (db.google_token(uid) or {}).get("scopes", "")
+        scopes = " ".join(sorted(set(previous.split()) | set(res.get("scope", "").split())))
+        db.save_google_token(uid, crypto.encrypt(settings.token_key, res["refresh_token"]), res["email"], scopes)
         return redirect("/#/connexions?google=ok")
 
     @app.post("/api/google/disconnect")
@@ -422,6 +428,55 @@ def create_app(settings: Settings | None = None) -> Flask:
     @authed
     def google_sites():
         return jsonify(google.list_sites(_access()))
+
+    # -- Google Analytics 4 -------------------------------------------------------------------------
+    def _ga4_access() -> str:
+        tok = db.google_token(user_id())
+        if not tok or google.GA4_SCOPE not in tok.get("scopes", ""):
+            raise google.GoogleError("Google Analytics n'est pas connecté", reconnect=True)
+        return _access()
+
+    @app.get("/api/ga4/properties")
+    @authed
+    def ga4_properties():
+        links = {l["property_id"]: l for l in db.ga4_links(user_id())}
+        props = google.ga4_properties(_ga4_access())
+        return jsonify(properties=[{**p, "site": (links.get(p["property_id"]) or {}).get("site")} for p in props],
+                       projects=[s["key"] for s in db.list_sites(user_id())])
+
+    @app.post("/api/ga4/link")
+    @authed
+    def ga4_link():
+        data = body()
+        prop = (data.get("property_id") or "").strip()
+        if not prop.startswith("properties/") or not prop.split("/")[1].isdigit():
+            abort(400, "Propriété GA4 invalide")
+        site = (data.get("site") or "").strip() or None
+        db.link_ga4(user_id(), prop, (data.get("display_name") or "")[:200], site)
+        return jsonify(linked=True)
+
+    @app.get("/api/ga4/traffic")
+    @authed
+    def ga4_traffic():
+        prop = request.args.get("property", "")
+        if not prop.startswith("properties/") or not prop.split("/")[1].isdigit():
+            abort(400, "Propriété GA4 invalide")
+        days = max(7, min(int(request.args.get("days", 28)), 90))
+        access = _ga4_access()
+        key = f"ga4|{user_id()}|{prop}|{days}|{time.strftime('%Y-%m-%d')}"
+        raw = None if request.args.get("refresh") else db.cache_get(key, 1)
+        if raw is None:
+            raw = google.ga4_traffic(access, prop, days)
+            db.cache_put(key, raw)
+        link = next((l for l in db.ga4_links(user_id()) if l["property_id"] == prop), None)
+        site = link and link["site"]
+        gsc_pages, audit = [], None
+        if site:
+            audit = db.latest_report_for_site(user_id(), site)
+            for p in db.properties(user_id()):
+                if property_site(p["site"]) == site:
+                    gsc_pages += db.gsc_pages_snapshot(user_id(), p["site"])[1]
+        return jsonify(property=prop, site=site, **traffic_mod.build(raw, gsc_pages, audit))
 
     @app.get("/api/positions/summary")
     @authed

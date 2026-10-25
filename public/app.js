@@ -779,10 +779,12 @@
   /* ---------- vue : positions ---------- */
   // Connexion Search Console indépendante de l'identifiant : le serveur ouvre l'autorisation Google
   // (lecture seule) et reçoit lui-même le jeton au retour, sur /api/google/callback.
-  function connectSearchConsole() {
-    api("/api/google/connect-url" + (ME && ME.email ? "?hint=" + encodeURIComponent(ME.email) : ""))
+  function connectSearchConsole(tools) {
+    tools = typeof tools === "string" ? tools : "gsc";
+    api("/api/google/connect-url?tools=" + tools + (ME && ME.email ? "&hint=" + encodeURIComponent(ME.email) : ""))
       .then(function (r) { location.href = r.url; }).catch(function (e) { toast(e.message, "bad"); });
   }
+  function connectAnalytics() { connectSearchConsole("ga4"); }
   function viewPositions(flash) {
     loading();
     api("/api/google/status").then(function (st) {
@@ -1742,6 +1744,99 @@
       }).catch(function (e) { toast(authMessage(e), "bad"); });
   }
 
+  /* ---------- vue : trafic (Google Analytics 4) ---------- */
+  // Plusieurs courbes positives (ex. sessions Google / autres canaux), axe à partir de 0
+  function seriesChart(series, o) {
+    o = o || {};
+    var W = 760, H = o.height || 230, P = { l: 40, r: 16, t: 14, b: 28 };
+    var all = []; series.forEach(function (sr) { sr.points.forEach(function (p) { all.push(p); }); });
+    if (!all.length) return h("p", { class: "muted" }, "Pas encore de données.");
+    var xs = all.map(function (p) { return +p.x; }), x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    var hi = Math.max(1, Math.max.apply(null, all.map(function (p) { return p.y; })));
+    var X = function (v) { return P.l + (x1 === x0 ? 0 : (v - x0) / (x1 - x0)) * (W - P.l - P.r); }, Y = function (v) { return P.t + (1 - v / hi) * (H - P.t - P.b); };
+    var s = svg("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": o.label || "Graphique" });
+    for (var i = 0; i <= 4; i++) { var v = hi * i / 4; s.append(svg("line", { class: "grid-line", x1: P.l, x2: W - P.r, y1: Y(v), y2: Y(v) }), svg("text", { x: P.l - 8, y: Y(v) + 4, "text-anchor": "end" }, fmt(v))); }
+    series.forEach(function (sr) {
+      var d = sr.points.map(function (p, i) { return (i ? "L" : "M") + X(+p.x).toFixed(1) + " " + Y(p.y).toFixed(1); }).join(" ");
+      if (sr.area) s.append(svg("path", { class: "area", d: d + " L" + X(x1) + " " + Y(0) + " L" + X(x0) + " " + Y(0) + " Z", style: "fill:" + sr.color }));
+      s.append(svg("path", { class: "draw", d: d, fill: "none", style: "stroke:" + sr.color, "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round", pathLength: 100 }));
+    });
+    s.append(svg("text", { x: X(x0), y: H - 6 }, fdate(x0)), svg("text", { x: X(x1), y: H - 6, "text-anchor": "end" }, fdate(x1)));
+    return h("div", {}, s, h("div", { class: "legend-row" }, series.map(function (sr) { var dot = h("span", { class: "dot" }); dot.style.background = sr.color; return h("span", {}, dot, sr.name); })));
+  }
+  function changeBadge(v, suffix) { return v == null ? null : delta(v) ? h("span", { class: "delta " + (v > 0 ? "up" : "down") }, (v > 0 ? "▲ +" : "▼ ") + v + (suffix || " %")) : h("span", { class: "muted" }, "="); }
+  function viewTraffic(propertyId) {
+    loading();
+    api("/api/google/status").then(function (st) {
+      if (!st.ga4) {
+        fill(main, h("section", { class: "hero" }, h("p", { class: "eyebrow" }, "Trafic"), h("h1", {}, "Qui vient, et qu'est-ce que ça rapporte ?"),
+          h("p", {}, "Connectez Google Analytics 4 : Vigie SEO croise vos visites et vos conversions avec vos positions Google et vos audits.")),
+          emptyState("Google Analytics n'est pas connecté", "Lecture seule, en deux clics. Vous pouvez utiliser n'importe quel compte Google ayant accès à votre propriété GA4.",
+            h("button", { class: "btn btn-dark", type: "button", onclick: connectAnalytics }, "Connecter Google Analytics")));
+        return;
+      }
+      return api("/api/ga4/properties").then(function (pp) {
+        var props = pp.properties;
+        if (!props.length) { fill(main, emptyState("Aucune propriété GA4", "Ce compte Google n'a accès à aucune propriété Google Analytics 4.", h("button", { class: "btn", type: "button", onclick: connectAnalytics }, "Utiliser un autre compte"))); return; }
+        var current = propertyId || sessionStorage.getItem("ga4-prop") || props[0].property_id;
+        var prop = props.find(function (p) { return p.property_id === current; }) || props[0];
+        sessionStorage.setItem("ga4-prop", prop.property_id);
+        var pick = h("select", { id: "ga-prop", "aria-label": "Propriété GA4", onchange: function (e) { location.hash = "#/trafic/" + e.target.value; } },
+          props.map(function (p) { return h("option", { value: p.property_id, selected: p.property_id === prop.property_id }, p.display_name + (p.account ? " · " + p.account : "")); }));
+        var siteSel = h("select", { id: "ga-site", "aria-label": "Projet associé", onchange: function (e) {
+          api("/api/ga4/link", { property_id: prop.property_id, display_name: prop.display_name, site: e.target.value }).then(function () { toast("Propriété associée ✓", "good"); viewTraffic(prop.property_id); });
+        } }, h("option", { value: "" }, "Aucun projet associé"), pp.projects.map(function (k) { return h("option", { value: k, selected: k === prop.site }, k); }));
+        var body = h("div", {}, h("div", { class: "empty" }, h("span", { class: "spinner" }), h("p", { class: "muted" }, "Lecture de Google Analytics…")));
+        fill(main, h("section", { class: "hero", style: "margin-bottom:24px" }, h("p", { class: "eyebrow" }, "Trafic · Google Analytics 4"), h("h1", {}, "Qui vient, et qu'est-ce que ça rapporte ?")),
+          h("div", { class: "card form-row", style: "margin-bottom:24px" },
+            h("div", { class: "field", style: "flex:2;min-width:240px" }, h("label", { for: "ga-prop" }, "Propriété"), pick),
+            h("div", { class: "field", style: "flex:1;min-width:200px" }, h("label", { for: "ga-site" }, "Projet Vigie SEO associé"), siteSel),
+            h("button", { class: "btn btn-small", type: "button", onclick: function () { renderBody(true); } }, "Actualiser")),
+          body);
+        function renderBody(refresh) {
+          fill(body, h("div", { class: "empty" }, h("span", { class: "spinner" })));
+          api("/api/ga4/traffic?property=" + encodeURIComponent(prop.property_id) + (refresh ? "&refresh=1" : "")).then(function (t) {
+            var k = t.kpis;
+            var cards = t.insights.map(function (i) {
+              var tint = i.priority === "high" ? "pink" : i.priority === "good" ? "good" : "blue";
+              return h("article", { class: "card insight " + tint }, h("h3", {}, i.title), h("p", {}, i.text),
+                i.pages ? h("div", { class: "chips small" }, i.pages.map(function (p) { return h("span", { class: "chip" }, p); })) : null,
+                i.action ? h("p", { class: "insight-action" }, "→ " + i.action) : null);
+            });
+            var maxShare = Math.max.apply(null, t.channels.map(function (c) { return c.share; }).concat([1]));
+            fill(body,
+              cards.length ? h("section", { style: "margin-bottom:32px" }, h("h2", { style: "margin-bottom:16px" }, "Ce qu'il faut retenir"), h("div", { class: "insights" }, cards)) : null,
+              h("div", { class: "kpis" },
+                h("div", { class: "kpi blue" }, h("span", { class: "v" }, fmt(k.totalUsers.value)), h("span", { class: "l" }, "visiteurs sur " + t.days + " jours "), changeBadge(k.totalUsers.change)),
+                h("div", { class: "kpi" }, h("span", { class: "v" }, fmt(k.sessions.value)), h("span", { class: "l" }, "sessions "), changeBadge(k.sessions.change)),
+                h("div", { class: "kpi pink" }, h("span", { class: "v" }, fmt(k.keyEvents.value)), h("span", { class: "l" }, "conversions "), changeBadge(k.keyEvents.change)),
+                h("div", { class: "kpi" }, h("span", { class: "v" }, fmt(k.engagementRate.value * 100, 1) + " %"), h("span", { class: "l" }, "taux d'engagement "), changeBadge(k.engagementRate.change, " pt"))),
+              h("div", { class: "card", style: "margin-top:20px" }, h("h3", { style: "margin-bottom:12px" }, "Sessions par jour"),
+                seriesChart([{ name: "Depuis Google (naturel)", color: "var(--green)", area: true, points: t.daily.map(function (d) { return { x: new Date(d.date), y: d.organic }; }) },
+                  { name: "Autres canaux", color: "var(--ink)", points: t.daily.map(function (d) { return { x: new Date(d.date), y: d.other }; }) }], { label: "Sessions par jour" })),
+              h("section", { class: "section" }, h("h2", { style: "margin-bottom:16px" }, "D'où viennent vos visiteurs"),
+                h("div", { class: "card channels" }, t.channels.map(function (c, i) {
+                  var bar = h("span", { class: "ch-bar" + (c.channel === "Organic Search" ? " org" : "") }); bar.style.setProperty("--w", (c.share / maxShare * 100) + "%"); bar.style.setProperty("--i", i);
+                  return h("div", { class: "ch-row" }, h("span", { class: "ch-name" }, c.label), h("span", { class: "ch-track" }, bar),
+                    h("b", { class: "ch-val" }, fmt(c.sessions)), h("span", { class: "muted ch-share" }, fmt(c.share, 1) + " %"), changeBadge(c.change));
+                }))),
+              h("section", { class: "section" }, h("h2", { style: "margin-bottom:6px" }, "Pages d'entrée depuis Google"),
+                h("p", { class: "muted", style: "margin-bottom:14px" }, t.site ? "Croisées avec la Search Console et le dernier audit de " + t.site + "." : "Associez un projet ci-dessus pour croiser avec la Search Console et vos audits."),
+                h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Page"), h("th", { class: "num" }, "Sessions"), h("th", { class: "num" }, "Conversions"),
+                  h("th", { class: "num" }, "Engagement"), h("th", { class: "num" }, "Clics Google"), h("th", { class: "num" }, "Position"), h("th", { class: "num" }, "Audit"))),
+                  h("tbody", {}, t.pages.length ? t.pages.map(function (p) {
+                    return h("tr", {}, h("td", { class: "url" }, p.page), h("td", { class: "num" }, h("b", {}, fmt(p.sessions))), h("td", { class: "num" }, p.keyEvents ? fmt(p.keyEvents) : h("span", { class: "muted" }, "0")),
+                      h("td", { class: "num" }, h("span", { class: "eng " + (p.engagementRate < 40 ? "low" : "ok") }, fmt(p.engagementRate, 1) + " %")),
+                      h("td", { class: "num" }, fmt(p.gsc_clicks)), h("td", { class: "num" }, fmt(p.gsc_position, 1)),
+                      h("td", { class: "num" }, p.issues ? h("span", { class: "delta down" }, p.issues + " pb") : h("span", { class: "muted" }, "–")));
+                  }) : h("tr", {}, h("td", { colspan: 7, class: "muted" }, "Aucune visite depuis la recherche Google sur la période.")))))));
+          }).catch(function (e) { fill(body, errorBox(e)); if (e.data && e.data.reconnect) body.append(h("button", { class: "btn btn-small", type: "button", onclick: connectAnalytics, style: "margin-top:12px" }, "Reconnecter Google Analytics")); });
+        }
+        renderBody(false);
+      });
+    }).catch(fail);
+  }
+
   /* ---------- vue : connexions (outils externes) ---------- */
   var GOOGLE_FLASH_C = { ok: ["good", "Search Console connectée ✓"], refuse: ["bad", "Connexion annulée : l'accès à la Search Console n'a pas été autorisé."],
     erreur: ["bad", "La connexion à Google a échoué. Vérifiez que la case Search Console est cochée, puis réessayez."],
@@ -1758,12 +1853,12 @@
           o.detail ? h("p", { class: "note" }, o.detail) : null,
           o.actions ? h("div", { class: "form-row" }, o.actions) : null);
       }
-      var gsc = st.connected;
+      var gsc = st.connected && st.gsc;
       var illus = svg("svg", { class: "conn-illus", viewBox: "0 0 420 160", "aria-hidden": "true" },
         svg("path", { class: "conn-line" + (gsc ? " on" : ""), d: "M210 80 C150 80 120 40 70 40" }),
-        svg("path", { class: "conn-line", d: "M210 80 C150 80 120 120 70 120" }),
+        svg("path", { class: "conn-line" + (st.ga4 ? " on" : ""), d: "M210 80 C150 80 120 120 70 120" }),
         svg("path", { class: "conn-line", d: "M210 80 C270 80 300 80 350 80" }),
-        svg("circle", { class: "conn-node" + (gsc ? " on" : ""), cx: 70, cy: 40, r: 18 }), svg("circle", { class: "conn-node", cx: 70, cy: 120, r: 18 }), svg("circle", { class: "conn-node", cx: 350, cy: 80, r: 18 }));
+        svg("circle", { class: "conn-node" + (gsc ? " on" : ""), cx: 70, cy: 40, r: 18 }), svg("circle", { class: "conn-node" + (st.ga4 ? " on" : ""), cx: 70, cy: 120, r: 18 }), svg("circle", { class: "conn-node", cx: 350, cy: 80, r: 18 }));
       var center = eyeMark(76, "conn-eye");
       fill(main,
         h("section", { class: "hero", style: "margin-bottom:24px" }, h("p", { class: "eyebrow" }, "Connexions"), h("h1", {}, "Branchez vos outils."),
@@ -1781,7 +1876,11 @@
                 });
               } }, "Déconnecter")]
               : [h("button", { class: "btn btn-dark", type: "button", onclick: connectSearchConsole }, "Connecter la Search Console")] }),
-          tool({ name: "Google Analytics 4", color: "#ffc3c3", icon: "A", soon: true, desc: "Trafic, conversions et pages qui rapportent." }),
+          tool({ name: "Google Analytics 4", color: "#ffc3c3", icon: "A", connected: st.ga4,
+            desc: "Visites, conversions et pages qui rapportent, croisées avec vos positions Google.",
+            detail: st.ga4 ? "Compte Google : " + (st.email || "connecté") + ". Choisissez vos propriétés dans la page Trafic." : "Lecture seule. Utilise la même connexion Google que la Search Console.",
+            actions: st.ga4 ? [h("a", { class: "btn btn-small btn-dark", href: "#/trafic" }, "Voir mon trafic")]
+              : [h("button", { class: "btn btn-dark", type: "button", onclick: connectAnalytics }, "Connecter Google Analytics")] }),
           tool({ name: "GitHub", color: "#d9f4e6", icon: "⌥", soon: true, desc: "Corrections SEO proposées automatiquement en pull request." })));
     }).catch(fail);
   }
@@ -1837,13 +1936,14 @@
     { group: "Audit", items: [["home", "#/", "Projets", "Score, historique et problèmes de vos sites"],
       ["plan", "#/plan", "Plan d'action", "Ce qu'il faut faire cette semaine, par priorité"]] },
     { group: "Visibilité Google", items: [["positions", "#/positions", "Positions", "Vos requêtes Search Console et leur analyse"],
-      ["tracking", "#/suivi", "Suivi", "Vos positions chaque jour, face aux concurrents"]] },
+      ["tracking", "#/suivi", "Suivi", "Vos positions chaque jour, face aux concurrents"],
+      ["traffic", "#/trafic", "Trafic", "Visites, conversions et pages qui rapportent (GA4)"]] },
     { group: "Recherche", items: [["keywords", "#/mots-cles", "Mots-clés", "Volumes, difficulté et intention"],
       ["domain", "#/domaine", "Domaines", "Trafic, mots-clés et backlinks de n'importe quel site"],
       ["competitors", "#/concurrents", "Concurrents", "Comparaison technique avec vos rivaux"]] },
     { group: "Réglages", items: [["connections", "#/connexions", "Connexions", "Search Console, et bientôt GA4 et GitHub"],
       ["account", "#/compte", "Mon compte", "Offre, e-mails, sécurité et double authentification"]] }];
-  var ROUTE_SECTION = { connexions: "connections", site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
+  var ROUTE_SECTION = { trafic: "traffic", connexions: "connections", site: "home", audit: "home", "mots-cles": "keywords", concurrents: "competitors", suivi: "tracking", domaine: "domain", compte: "account", offres: "account" };
   var currentSection = "home";
   var menu = document.getElementById("menu"), burger = document.getElementById("burger"), topBar = document.querySelector(".top");
   var lastFocus = null, menuTimer = null;
@@ -1951,6 +2051,7 @@
     else if (name === "concurrents") viewCompetitors(parts[1]);
     else if (name === "compte" || name === "offres") viewAccount();
     else if (name === "connexions") viewConnections(qs.get("google"));
+    else if (name === "trafic") viewTraffic(parts.slice(1).join("/"));
     else if (name === "nouveau-mot-de-passe") viewNewPassword();
     else viewHome();
     main.focus({ preventScroll: true });

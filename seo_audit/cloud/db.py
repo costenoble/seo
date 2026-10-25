@@ -153,16 +153,28 @@ class Db:
                                 for r in rows]}
 
     # -- Google ------------------------------------------------------------------------
-    def save_google_token(self, user_id: str, enc: str, email: str | None) -> None:
+    def save_google_token(self, user_id: str, enc: str, email: str | None, scopes: str = "") -> None:
+        """Les autorisations s'additionnent (autorisation incrémentale chez Google)."""
         with self.conn() as c:
-            c.execute("""INSERT INTO google_tokens (user_id, refresh_token_enc, email) VALUES (%s,%s,%s)
+            c.execute("""INSERT INTO google_tokens (user_id, refresh_token_enc, email, scopes) VALUES (%s,%s,%s,%s)
                          ON CONFLICT (user_id) DO UPDATE SET refresh_token_enc=EXCLUDED.refresh_token_enc,
-                         email=EXCLUDED.email, updated_at=now()""", (user_id, enc, email))
+                         email=EXCLUDED.email, scopes=EXCLUDED.scopes, updated_at=now()""", (user_id, enc, email, scopes))
 
     def google_token(self, user_id: str) -> dict | None:
         with self.conn() as c:
-            return c.execute("SELECT refresh_token_enc, email FROM google_tokens WHERE user_id=%s",
+            return c.execute("SELECT refresh_token_enc, email, scopes FROM google_tokens WHERE user_id=%s",
                              (user_id,)).fetchone()
+
+    def ga4_links(self, user_id: str) -> list[dict]:
+        with self.conn() as c:
+            return c.execute("SELECT property_id, display_name, site FROM ga4_properties WHERE user_id=%s ORDER BY display_name",
+                             (user_id,)).fetchall()
+
+    def link_ga4(self, user_id: str, property_id: str, display_name: str, site: str | None) -> None:
+        with self.conn() as c:
+            c.execute("""INSERT INTO ga4_properties (user_id, property_id, display_name, site) VALUES (%s,%s,%s,%s)
+                         ON CONFLICT (user_id, property_id) DO UPDATE SET display_name=EXCLUDED.display_name, site=EXCLUDED.site""",
+                      (user_id, property_id, display_name, site))
 
     def delete_google_token(self, user_id: str) -> None:
         with self.conn() as c:

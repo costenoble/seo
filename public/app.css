@@ -675,3 +675,18 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 .il-rank li.me .il-dot { background: var(--green); }
 .il-climb { margin-left: auto; font: 700 .8rem var(--head); background: var(--green); color: #0b0b0b; padding: 3px 10px; border-radius: 99px; opacity: 0; transform: scale(.6); }
 .in .il-climb { animation: riseIn .5s cubic-bezier(.3,1.6,.5,1) 2.3s forwards; }
+
+/* trafic */
+.kpi .delta { margin-top: 6px; display: inline-flex; }
+.channels { display: grid; gap: 12px; }
+.ch-row { display: grid; grid-template-columns: minmax(140px, 1.2fr) 2fr 70px 60px 90px; align-items: center; gap: 12px; }
+.ch-name { font-weight: 700; }
+.ch-track { height: 12px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.ch-bar { display: block; height: 100%; width: var(--w); background: var(--ink); border-radius: 99px; animation: growW 1s cubic-bezier(.2,.9,.3,1) backwards; animation-delay: calc(var(--i) * 80ms); }
+.ch-bar.org { background: var(--green); }
+@keyframes growW { from { width: 0; } }
+.ch-val { text-align: right; } .ch-share { text-align: right; }
+.eng { font-weight: 700; } .eng.low { color: var(--red); } .eng.ok { color: var(--green-ink); }
+.chart .draw { stroke-dasharray: 100; animation: draw 1.6s cubic-bezier(.4,0,.2,1) backwards; }
+@media (max-width: 720px) { .ch-row { grid-template-columns: 1fr 60px 70px; } .ch-track, .ch-row .delta, .ch-row > .muted { display: none; } }
+@media (prefers-reduced-motion: reduce) { .ch-bar, .chart .draw { animation: none; } }

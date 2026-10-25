@@ -588,3 +588,48 @@ def test_two_factor_enforced_by_server(client, pg_dsn):
                        SECRET, algorithm="HS256")
     ok = client.get("/api/me", headers={"Authorization": f"Bearer {aal2}"})
     assert ok.status_code == 200 and ok.get_json()["mfa"] is True
+
+
+def test_ga4_connection_and_traffic(client, pg_dsn, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+    uid, h = new_user(pg_dsn, plan="pro")
+    assert client.get("/api/ga4/properties", headers=h).status_code == 409  # pas connecté
+    # 1) Search Console seule, puis 2) Analytics ajouté : les autorisations s'additionnent
+    monkeypatch.setattr(google, "exchange_code", lambda code, cid, cs, uri: {"refresh_token": "rt1", "email": "moi@gmail.com", "scope": google.SCOPE + " openid"})
+    state = parse_qs(urlsplit(client.get("/api/google/connect-url", headers=h).get_json()["url"]).query)["state"][0]
+    client.get(f"/api/google/callback?state={state}&code=a")
+    url = client.get("/api/google/connect-url?tools=ga4", headers=h).get_json()["url"]
+    assert google.GA4_SCOPE in parse_qs(urlsplit(url).query)["scope"][0]
+    monkeypatch.setattr(google, "exchange_code", lambda code, cid, cs, uri: {"refresh_token": "rt2", "email": "moi@gmail.com", "scope": google.GA4_SCOPE})
+    client.get(f"/api/google/callback?state={parse_qs(urlsplit(url).query)['state'][0]}&code=b")
+    st = client.get("/api/google/status", headers=h).get_json()
+    assert st["gsc"] and st["ga4"]
+
+    monkeypatch.setattr(google, "access_token", lambda rt, cid, cs: "acc")
+    monkeypatch.setattr(google, "ga4_properties", lambda token: [{"property_id": "properties/42", "display_name": "Kompta", "account": "CST"}])
+    raw = {"days": 28, "current": {"totalUsers": 500, "sessions": 800, "keyEvents": 12, "engagementRate": .55},
+           "previous": {"totalUsers": 400, "sessions": 700, "keyEvents": 10, "engagementRate": .5},
+           "daily": [{"date": "20261001", "sessionDefaultChannelGroup": "Organic Search", "sessions": 20}, {"date": "20261001", "sessionDefaultChannelGroup": "Direct", "sessions": 9}],
+           "channels": [{"sessionDefaultChannelGroup": "Organic Search", "dateRange": "date_range_0", "sessions": 480, "keyEvents": 8},
+                        {"sessionDefaultChannelGroup": "Organic Search", "dateRange": "date_range_1", "sessions": 400, "keyEvents": 6},
+                        {"sessionDefaultChannelGroup": "Direct", "dateRange": "date_range_0", "sessions": 320, "keyEvents": 4}],
+           "organic_pages": [{"landingPage": "/logiciel-facturation-charpentier", "sessions": 120, "keyEvents": 0, "engagementRate": .3},
+                             {"landingPage": "/", "sessions": 300, "keyEvents": 8, "engagementRate": .7}]}
+    calls = []
+    monkeypatch.setattr(google, "ga4_traffic", lambda token, prop, days=28: calls.append(prop) or raw)
+    assert client.get("/api/ga4/properties", headers=h).get_json()["properties"][0]["property_id"] == "properties/42"
+    assert client.post("/api/ga4/link", json={"property_id": "pas-valide"}, headers=h).status_code == 400
+    assert client.post("/api/ga4/link", json={"property_id": "properties/42", "display_name": "Kompta", "site": "kompta.pro"}, headers=h).status_code == 200
+    t = client.get("/api/ga4/traffic?property=properties/42", headers=h).get_json()
+    assert t["site"] == "kompta.pro" and t["kpis"]["sessions"]["change"] == 14 and t["kpis"]["engagementRate"]["change"] == 5.0
+    organic = t["channels"][0]
+    assert organic["channel"] == "Organic Search" and organic["share"] == 60.0 and organic["change"] == 20
+    titles = " ".join(i["title"] for i in t["insights"])
+    assert "sans convertir" in titles and "repartent vite" in titles and "60.0 %" in titles
+    # mis en cache pour la journée ; « Actualiser » relit Google
+    client.get("/api/ga4/traffic?property=properties/42", headers=h)
+    assert len(calls) == 1
+    client.get("/api/ga4/traffic?property=properties/42&refresh=1", headers=h)
+    assert len(calls) == 2
+    _, bob = new_user(pg_dsn)
+    assert client.get("/api/ga4/traffic?property=properties/42", headers=bob).status_code == 409
