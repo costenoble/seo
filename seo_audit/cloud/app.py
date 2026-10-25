@@ -175,39 +175,51 @@ def create_app(settings: Settings | None = None) -> Flask:
             abort(503, "Connexion GitHub pas encore configurée")
         return GitHubApp(settings.github_app_id, settings.github_private_key, settings.github_client_id, settings.github_client_secret)
 
+    def _github_urls(uid: str) -> dict:
+        """Adresses de connexion GitHub, signées pour l'utilisateur (le retour ne lie que le compte qui a lancé la connexion)."""
+        from urllib.parse import urlencode
+        state = emails.sign(settings.token_key, uid, "github")
+        return {"connect_url": "https://github.com/login/oauth/authorize?" + urlencode(
+                    {"client_id": settings.github_client_id, "redirect_uri": f"{settings.app_url}/api/github/callback", "state": state}),
+                "install_url": f"https://github.com/apps/{settings.github_app_slug}/installations/new?" + urlencode({"state": state})}
+
     @app.get("/api/github/status")
     @authed
     def github_status():
-        configured = bool(settings.github_app_id and settings.github_private_key and settings.github_app_slug)
+        configured = bool(settings.github_app_id and settings.github_private_key and settings.github_app_slug and settings.github_client_id)
         return jsonify(configured=configured, ai=bool(settings.anthropic_api_key),
-                       install_url=f"https://github.com/apps/{settings.github_app_slug}/installations/new" if configured else None,
+                       **(_github_urls(user_id()) if configured else {"connect_url": None, "install_url": None}),
                        installations=db.installations(user_id()), projects=db.project_repos(user_id()))
 
     @app.get("/api/github/callback")
     def github_callback():
-        """Retour de GitHub après installation : on transmet le code à l'application, qui le valide connectée."""
+        """Retour de GitHub (identification ou installation) : on transmet le code à l'application, qui le valide connectée."""
         from urllib.parse import urlencode
-        q = {k: request.args.get(k, "") for k in ("code", "installation_id", "setup_action")}
+        q = {k: request.args.get(k, "") for k in ("code", "installation_id", "state")}
         if not q["code"] and settings.github_client_id:
             # mise à jour d'une installation existante : GitHub n'envoie pas toujours de code, on demande l'identification
             return redirect("https://github.com/login/oauth/authorize?" + urlencode(
-                {"client_id": settings.github_client_id, "redirect_uri": f"{settings.app_url}/api/github/callback"}))
-        return redirect("/#/connexions?" + urlencode({"github_code": q["code"], "installation_id": q["installation_id"]}))
+                {"client_id": settings.github_client_id, "redirect_uri": f"{settings.app_url}/api/github/callback", "state": q["state"]}))
+        return redirect("/#/connexions?" + urlencode({"github_code": q["code"], "state": q["state"]}))
 
     @app.post("/api/github/link")
     @authed
     def github_link():
-        """Lie à l'utilisateur les installations auxquelles son compte GitHub a réellement accès (vérifié chez GitHub)."""
-        code = (body().get("code") or "").strip()
+        """Lie à l'utilisateur les installations auxquelles son compte GitHub a réellement accès (vérifié chez GitHub).
+        Aucune installation : l'application renvoie vers la page d'installation de l'app GitHub."""
+        data = body()
+        code = (data.get("code") or "").strip()
         if not code:
             abort(400, "Code GitHub manquant")
+        if not emails.verify(settings.token_key, user_id(), "github", data.get("state") or ""):
+            abort(400, "Lien de connexion GitHub invalide, recommencez depuis Vigie SEO")
         try:
             found = _gh().user_installations(code)
         except GitHubError as exc:
             abort(502, str(exc))
         for inst in found:
             db.save_installation(user_id(), inst["id"], inst["account"])
-        return jsonify(installations=db.installations(user_id()))
+        return jsonify(installations=db.installations(user_id()), **_github_urls(user_id()))
 
     @app.post("/api/github/disconnect")
     @authed

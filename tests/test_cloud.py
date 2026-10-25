@@ -691,16 +691,23 @@ def test_github_fix_opens_pull_request(pg_dsn, monkeypatch):
                                            github_app_slug="vigie-seo", github_client_id="gh-cid")).test_client()
     uid, h = new_user(pg_dsn)
     assert off.get("/api/github/status", headers=h).get_json()["configured"] is False
-    st = client.get("/api/github/status", headers=h).get_json()
-    assert st["install_url"] == "https://github.com/apps/vigie-seo/installations/new" and st["installations"] == []
+    assert client.get("/api/github/status", headers=h).get_json()["installations"] == []
 
-    # retour de GitHub : redirection vers l'application, puis liaison vérifiée chez GitHub
-    r = client.get("/api/github/callback?code=bon-code&installation_id=42&setup_action=install")
-    assert r.status_code == 302 and r.headers["Location"] == "/#/connexions?github_code=bon-code&installation_id=42"
-    r = client.get("/api/github/callback?installation_id=42&setup_action=update")
-    assert r.status_code == 302 and r.headers["Location"].startswith("https://github.com/login/oauth/authorize?client_id=gh-cid")
-    assert client.post("/api/github/link", json={"code": "faux"}, headers=h).status_code == 502
-    assert client.post("/api/github/link", json={"code": "bon-code"}, headers=h).get_json()["installations"][0]["account"] == "moi"
+    # connexion : identification GitHub signée pour le compte, retour vers l'application, liaison vérifiée chez GitHub
+    from urllib.parse import parse_qs, urlsplit
+    st = client.get("/api/github/status", headers=h).get_json()
+    state = parse_qs(urlsplit(st["connect_url"]).query)["state"][0]
+    assert st["connect_url"].startswith("https://github.com/login/oauth/authorize?client_id=gh-cid")
+    assert st["install_url"].startswith("https://github.com/apps/vigie-seo/installations/new?state=")
+    r = client.get(f"/api/github/callback?code=bon-code&installation_id=42&setup_action=install&state={state}")
+    assert r.status_code == 302 and r.headers["Location"] == f"/#/connexions?github_code=bon-code&state={state}"
+    r = client.get(f"/api/github/callback?installation_id=42&setup_action=update&state={state}")
+    assert r.headers["Location"].startswith("https://github.com/login/oauth/authorize?client_id=gh-cid") and state in r.headers["Location"]
+    assert client.post("/api/github/link", json={"code": "faux", "state": state}, headers=h).status_code == 502
+    _, eve = new_user(pg_dsn)
+    assert client.post("/api/github/link", json={"code": "bon-code", "state": state}, headers=eve).status_code == 400
+    assert client.post("/api/github/link", json={"code": "bon-code"}, headers=h).status_code == 400
+    assert client.post("/api/github/link", json={"code": "bon-code", "state": state}, headers=h).get_json()["installations"][0]["account"] == "moi"
 
     # dépôt du projet : seulement un dépôt accessible par l'installation
     with psycopg.connect(pg_dsn) as c:

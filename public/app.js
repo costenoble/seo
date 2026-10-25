@@ -1928,7 +1928,7 @@
     if (!gh.configured) return tool(Object.assign(base, { soon: true }));
     if (!linked) return tool(Object.assign(base, {
       detail: "Vigie SEO prépare la correction (balises title, descriptions, canonical…) et vous la propose en pull request : rien n'est publié sans votre validation. Vous choisissez les dépôts autorisés.",
-      actions: [h("a", { class: "btn btn-dark", href: gh.install_url }, "Connecter GitHub")] }));
+      actions: [h("a", { class: "btn btn-dark", href: gh.connect_url }, "Connecter GitHub")] }));
     var repos = h("div", { class: "repo-list" }, h("p", { class: "muted" }, "Chargement des dépôts…"));
     api("/api/github/repos").then(function (r) {
       if (!r.sites.length) { fill(repos, h("p", { class: "note" }, "Lancez d'abord un audit : chaque projet pourra ensuite être associé à son dépôt.")); return; }
@@ -1956,12 +1956,16 @@
           });
         } }, "Déconnecter")] }));
   }
-  function linkGithub(code, installation) {
+  function linkGithub(code, state) {
     history.replaceState(null, "", "#/connexions");
-    if (!code) { toast("Accès GitHub mis à jour", "good"); viewConnections(); return; }
+    if (!code) { viewConnections(); return; }
     loading();
-    api("/api/github/link", { code: code, installation_id: installation }).then(function (r) {
-      toast(r.installations.length ? "GitHub connecté ✓ Associez maintenant vos projets à leurs dépôts." : "Aucune installation trouvée sur ce compte GitHub", r.installations.length ? "good" : "bad");
+    api("/api/github/link", { code: code, state: state }).then(function (r) {
+      if (!r.installations.length) {  // compte identifié mais application pas encore installée : on l'installe
+        toast("Encore une étape : choisissez les dépôts à autoriser", "");
+        setTimeout(function () { location.href = r.install_url; }, 900); return;
+      }
+      toast("GitHub connecté ✓ Associez maintenant vos projets à leurs dépôts.", "good");
       viewConnections();
     }).catch(function (e) { toast(e.message, "bad"); viewConnections(); });
   }
@@ -2131,7 +2135,7 @@
     else if (name === "mots-cles") viewKeywords();
     else if (name === "concurrents") viewCompetitors(parts[1]);
     else if (name === "compte" || name === "offres") viewAccount();
-    else if (name === "connexions" && qs.has("github_code")) linkGithub(qs.get("github_code"), qs.get("installation_id"));
+    else if (name === "connexions" && qs.has("github_code")) linkGithub(qs.get("github_code"), qs.get("state"));
     else if (name === "connexions") viewConnections(qs.get("google"));
     else if (name === "trafic") viewTraffic(parts.slice(1).join("/"));
     else if (name === "nouveau-mot-de-passe") viewNewPassword();
