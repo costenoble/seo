@@ -709,3 +709,12 @@ h2.big { font-size: clamp(2rem, 4.4vw, 3.4rem); max-width: 18ch; margin-bottom: 
 @keyframes fixspin { to { transform: rotate(360deg); } }
 @keyframes fixfade { from { opacity: 0; transform: translateY(4px); } }
 @media (prefers-reduced-motion: reduce) { .fix-spin { animation-duration: 2.4s; } .fix-step { animation: none; } }
+
+/* pastilles des outils branchés sur un projet */
+.conn-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.conn-badge { display: inline-flex; align-items: center; gap: 6px; font: 600 .78rem var(--head); padding: 4px 10px 4px 4px; border-radius: 99px;
+  background: var(--paper); color: var(--ink); border: 1.5px solid var(--ink); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-badge b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; font-size: .72rem; color: #0b0b0b; flex: none; }
+.conn-badge.gh b { background: #c9f0dc; } .conn-badge.gsc b { background: #d2edff; } .conn-badge.ga4 b { background: #ffc3c3; }
+.conn-badge.add { padding: 4px 12px; border-style: dashed; color: var(--muted); border-color: var(--muted); text-decoration: none; }
+.conn-badge.add:hover { color: var(--ink); border-color: var(--ink); }

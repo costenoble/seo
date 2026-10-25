@@ -635,13 +635,25 @@
             e.preventDefault(); e.stopPropagation(); deleteProject(s.key, viewHome);
           } }, "×"),
           h("div", { class: "row" }, h("div", {}, h("p", { class: "name" }, s.key),
-            h("p", { class: "muted" }, l ? s.audits + " audit" + (s.audits > 1 ? "s" : "") + " · dernier le " + fdate(l.date, true) : "Premier audit en cours…")),
+            h("p", { class: "muted" }, l ? s.audits + " audit" + (s.audits > 1 ? "s" : "") + " · dernier le " + fdate(l.date, true) : "Premier audit en cours…"),
+            connBadges(s.connections)),
             l ? ring(l.score) : h("span", { class: "spinner" })),
           h("div", { class: "row", style: "align-items:end" }, l ? sevs(l.issues_by_severity) : h("span"),
             h("div", { style: "display:grid;gap:6px;justify-items:end" }, s.running && l ? h("span", { class: "delta" }, "Audit en cours") : d, spark(s.history.map(function (x) { return x.score; })))));
       }));
       fill(main, hero, body);
     }).catch(fail);
+  }
+
+  // Petites pastilles des outils branchés sur un projet (GitHub, Search Console, Analytics).
+  function connBadges(c, withLink) {
+    c = c || {};
+    var items = [];
+    if (c.github) items.push(h("span", { class: "conn-badge gh", title: "Dépôt GitHub associé : corrections automatiques possibles" }, h("b", {}, "⌥"), c.github));
+    if (c.gsc) items.push(h("span", { class: "conn-badge gsc", title: "Search Console importée" }, h("b", {}, "G"), "Search Console"));
+    if (c.ga4) items.push(h("span", { class: "conn-badge ga4", title: "Google Analytics associé" }, h("b", {}, "A"), "Analytics"));
+    if (withLink && (!c.github || !c.gsc || !c.ga4)) items.push(h("a", { class: "conn-badge add", href: "#/connexions" }, "+ Connecter un outil"));
+    return items.length ? h("div", { class: "conn-badges" }, items) : null;
   }
 
   function deleteProject(key, after) {
@@ -671,7 +683,7 @@
         h("div", { class: "page-head", style: "margin-top:16px" }, ring(last.score, 132),
           h("div", { class: "grow" }, h("p", { class: "eyebrow" }, "Projet"), h("h1", { style: "font-size:clamp(2rem,4vw,3rem);word-break:break-word" }, key),
             h("p", { class: "muted" }, fmt(last.pages) + " pages explorées, dont " + fmt(last.indexable) + " indexables · audit du " + fdatetime(last.date)),
-            sevs(last.issues_by_severity)),
+            sevs(last.issues_by_severity), connBadges(site.connections, true)),
           h("div", { class: "form-row" }, h("a", { class: "btn btn-dark", href: "#/plan/" + encodeURIComponent(key) }, "Plan d'action"),
             h("button", { class: "btn btn-small danger", type: "button", onclick: function () { deleteProject(key, function () { location.hash = "#/"; }); } }, "Supprimer le projet"),
             h("a", { class: "btn", href: "#/audit/" + last.id }, "Voir les problèmes"),

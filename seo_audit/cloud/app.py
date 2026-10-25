@@ -366,10 +366,23 @@ def create_app(settings: Settings | None = None) -> Flask:
         return jsonify(deleted=True)  # toutes les tables sont en ON DELETE CASCADE
 
     # -- audits -------------------------------------------------------------------------------
+    def _connections(uid: str) -> dict:
+        """Outils branchés sur chaque projet : dépôt GitHub, Search Console, Google Analytics."""
+        out: dict = {}
+        for site, repo in db.project_repos(uid).items():
+            out.setdefault(site, {})["github"] = repo
+        for p in db.properties(uid):
+            out.setdefault(property_site(p["site"]), {})["gsc"] = True
+        for link in db.ga4_links(uid):
+            if link.get("site"):
+                out.setdefault(link["site"], {})["ga4"] = True
+        return out
+
     @app.get("/api/sites")
     @authed
     def sites():
-        return jsonify(db.list_sites(user_id()))
+        conns = _connections(user_id())
+        return jsonify([{**s, "connections": conns.get(s["key"], {})} for s in db.list_sites(user_id())])
 
     @app.get("/api/sites/<key>")
     @authed
@@ -377,7 +390,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         audits = db.site_audits(user_id(), key)
         if not audits:
             abort(404, "Projet introuvable")
-        return jsonify(key=key, audits=audits)
+        return jsonify(key=key, audits=audits, connections=_connections(user_id()).get(key, {}))
 
     @app.delete("/api/sites/<key>")
     @authed
